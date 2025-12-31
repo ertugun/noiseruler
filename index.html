@@ -1,0 +1,2516 @@
+<!--
+HOW TO RUN:
+1. Place this index.html file in the same folder as "ses_cetveli_v3.jpg"
+2. Serve via a local web server (required for audio/image loading):
+   - Python: python -m http.server 8000
+   - Node: npx http-server
+   - Or use any local server
+3. Open http://localhost:8000/index.html in your browser
+4. Click "Start Audio" to begin (required for autoplay policy)
+5. Upload audio files (.wav/.mp3/.ogg) to sources and drag listener/sources around
+
+NOTE: Audio files must be served from a local server due to CORS restrictions.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sound Ruler / Noise Ruler</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        #layout {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+        
+        #main-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        #canvas-container {
+            position: relative;
+            background: #2a2a2a;
+            border: 2px solid #444;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #canvas {
+            display: block;
+            cursor: crosshair;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        #control-panel {
+            background: #2a2a2a;
+            border-left: 2px solid #444;
+            display: flex;
+            flex-direction: column;
+            width: 360px;
+            transition: width 0.3s ease;
+            overflow: hidden;
+        }
+        
+        #control-panel.collapsed {
+            width: 40px;
+        }
+        
+        #control-panel.collapsed #panel-title,
+        #control-panel.collapsed #tab-bar,
+        #control-panel.collapsed #tab-content {
+            display: none;
+        }
+        
+        #panel-header {
+            display: flex;
+            align-items: center;
+            padding: 8px 15px;
+            background: #1a1a1a;
+            border-bottom: 1px solid #444;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        #control-panel.collapsed #panel-header {
+            padding: 8px;
+            justify-content: center;
+        }
+        
+        #panel-header:hover {
+            background: #222;
+        }
+        
+        #collapse-toggle {
+            margin-right: 10px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        
+        #panel-title {
+            flex: 1;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        #tab-bar {
+            display: flex;
+            flex-direction: column;
+            background: #1a1a1a;
+            border-bottom: 1px solid #444;
+        }
+        
+        .tab {
+            padding: 12px 15px;
+            background: #1a1a1a;
+            border: none;
+            border-right: 2px solid transparent;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+            text-align: left;
+        }
+        
+        .tab:hover {
+            background: #222;
+            color: #fff;
+        }
+        
+        .tab.active {
+            background: #2a2a2a;
+            color: #fff;
+            border-right-color: #0066cc;
+        }
+        
+        #tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+        
+        .tab-pane {
+            display: none;
+        }
+        
+        .tab-pane.active {
+            display: block;
+        }
+        
+        .control-group {
+            margin-bottom: 12px;
+        }
+        
+        label {
+            display: block;
+            font-size: 12px;
+            margin-bottom: 4px;
+            color: #aaa;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+        }
+        
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 4px 8px;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        
+        input[type="file"] {
+            font-size: 11px;
+            margin-top: 4px;
+            width: 100%;
+        }
+        
+        .toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        button {
+            background: #4a4a4a;
+            color: #fff;
+            border: 1px solid #666;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        
+        button:hover {
+            background: #5a5a5a;
+        }
+        
+        button:active {
+            background: #3a3a3a;
+        }
+        
+        button.primary {
+            background: #0066cc;
+            border-color: #0088ff;
+        }
+        
+        button.primary:hover {
+            background: #0077dd;
+        }
+        
+        button.danger {
+            background: #cc3300;
+            border-color: #ff4400;
+        }
+        
+        button.danger:hover {
+            background: #dd4400;
+        }
+        
+        .source-item {
+            background: #1a1a1a;
+            border: 1px solid #444;
+            border-radius: 3px;
+            padding: 10px;
+            margin-bottom: 8px;
+        }
+        
+        .source-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .source-name {
+            font-weight: bold;
+            font-size: 13px;
+            color: #fff;
+            flex: 1;
+        }
+        
+        .source-controls {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .source-controls button {
+            padding: 3px 8px;
+            font-size: 11px;
+        }
+        
+        .source-info {
+            font-size: 11px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        
+        .active-source {
+            border-color: #0066cc;
+            background: #1a2a3a;
+        }
+        
+        .readout {
+            background: #1a1a1a;
+            border: 1px solid #444;
+            border-radius: 3px;
+            padding: 8px;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            color: #0f0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: bold;
+            margin-left: 5px;
+        }
+        
+        .status.stopped {
+            background: #cc3300;
+            color: #fff;
+        }
+        
+        .status.playing {
+            background: #00cc33;
+            color: #fff;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        #audio-hud {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(26, 26, 26, 0.95);
+            border: 2px solid #444;
+            border-radius: 4px;
+            padding: 6px 10px;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+        
+        #audio-hud .hud-controls {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        
+        #audio-hud button {
+            padding: 4px 10px;
+            font-size: 10px;
+        }
+        
+        #audio-hud .hud-status {
+            font-size: 9px;
+            font-weight: bold;
+            padding: 3px 8px;
+            border-radius: 3px;
+            min-width: 55px;
+            text-align: center;
+        }
+        
+        #audio-hud .hud-status.playing {
+            background: #00cc33;
+            color: #fff;
+        }
+        
+        #audio-hud .hud-status.stopped {
+            background: #cc3300;
+            color: #fff;
+        }
+        
+        
+        #debug-overlay {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(26, 26, 26, 0.9);
+            border: 1px solid #444;
+            border-radius: 3px;
+            padding: 6px 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+            color: #0f0;
+            z-index: 999;
+            line-height: 1.4;
+            display: none; /* Default: hidden, can be shown via control panel */
+        }
+        
+        #debug-overlay.visible {
+            display: block;
+        }
+        
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+    </style>
+</head>
+<body>
+    <div id="debug-overlay">
+        <div>bgState: <span id="debug-bgState">-</span></div>
+        <div>bgSrc: <span id="debug-bgSrc">-</span></div>
+        <div>scale: <span id="debug-scale">-</span></div>
+        <div>canvasPixelSize: <span id="debug-canvasSize">-</span></div>
+        <div>framesDrawn: <span id="debug-frames">0</span></div>
+    </div>
+    
+    <div id="audio-hud">
+        <div class="hud-controls">
+            <button id="hudStartBtn" class="primary">Start</button>
+            <button id="hudStopBtn">Stop</button>
+        </div>
+        <div id="hudStatus" class="hud-status stopped">STOPPED</div>
+    </div>
+    
+    <div id="layout">
+        <div id="main-container">
+            <div id="canvas-container">
+                <canvas id="canvas" width="240" height="240"></canvas>
+            </div>
+        </div>
+        
+        <div id="control-panel">
+        <div id="panel-header">
+            <span id="collapse-toggle">◀</span>
+            <span id="panel-title">Controls</span>
+        </div>
+        <div id="tab-bar">
+            <button class="tab active" data-tab="audio">Audio</button>
+            <button class="tab" data-tab="sources">Sources</button>
+            <button class="tab" data-tab="mixer">Mixer</button>
+            <button class="tab" data-tab="view">View</button>
+            <button class="tab" data-tab="rings">Rings</button>
+            <button class="tab" data-tab="debug">Debug</button>
+        </div>
+        <div id="tab-content">
+            <div id="tab-audio" class="tab-pane active">
+                <div class="control-group">
+                    <label>Master Volume: <span id="masterVolValue">0</span> dB</label>
+                    <input type="range" id="masterVol" min="-60" max="0" value="0" step="0.1">
+                </div>
+                <div class="control-group">
+                    <label>Nearest N Sources: <span id="nearestNValue">4</span></label>
+                    <input type="range" id="nearestN" min="1" max="8" value="4" step="1">
+                </div>
+                <div class="control-group">
+                    <label>Global Rmax: <span id="globalRmaxValue">80</span></label>
+                    <input type="range" id="globalRmax" min="20" max="200" value="80" step="5">
+                </div>
+                <div class="control-group">
+                    <label>Falloff Power: <span id="falloffPowerValue">2.2</span></label>
+                    <input type="range" id="falloffPower" min="0.5" max="5" value="2.2" step="0.1">
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="panningEnabled" checked>
+                    <label for="panningEnabled">Stereo Panning</label>
+                </div>
+                <div class="control-group">
+                    <label>Pan Distance: <span id="panDistanceValue">120</span></label>
+                    <input type="range" id="panDistance" min="50" max="240" value="120" step="5">
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="showSourceRanges" checked>
+                    <label for="showSourceRanges">Show Source Range Circles</label>
+                </div>
+            </div>
+            
+            <div id="tab-sources" class="tab-pane">
+                <div class="control-group">
+                    <label>Load Audio Files:</label>
+                    <input type="file" id="loadAllAudioFiles" accept="audio/*" multiple style="margin-bottom: 5px;">
+                    <div style="font-size: 10px; color: #888; margin-top: 4px;">
+                        <strong>Option 1 (file://):</strong> Select multiple audio files (A1.mp3, A2.wav, etc.) to auto-match with sources. Files are saved to localStorage.
+                        <br><br>
+                        <strong>Option 2 (Recommended - Auto-load on startup):</strong> Use a local server:
+                        <br>1. Open terminal in this folder
+                        <br>2. Run: <code style="background: #1a1a1a; padding: 2px 4px; border-radius: 2px; font-family: monospace;">python -m http.server 8000</code>
+                        <br>3. Open: <code style="background: #1a1a1a; padding: 2px 4px; border-radius: 2px; font-family: monospace;">http://localhost:8000/index.html</code>
+                        <br>Files named A1.mp3, A2.wav, etc. will auto-load on startup!
+                    </div>
+                </div>
+                <button id="addSourceBtn" style="margin-bottom: 10px; width: 100%;">Add Source</button>
+                <div id="sourcesList"></div>
+            </div>
+            
+            <div id="tab-mixer" class="tab-pane">
+                <div id="mixerList" style="max-height: 400px; overflow-y: auto;">
+                    <!-- Mixer list will be populated here -->
+                </div>
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                    <div style="margin-bottom: 8px; font-size: 11px; color: #ccc;">Master Volume Meter</div>
+                    <div id="masterVolumeMeter" style="width: 100%; height: 20px; background: #1a1a1a; border: 1px solid #444; border-radius: 3px; position: relative; overflow: hidden;">
+                        <div id="masterVolumeBar" style="height: 100%; width: 0%; transition: width 0.05s linear;"></div>
+                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #fff; font-weight: bold; text-shadow: 0 0 2px #000;">
+                            <span id="masterVolumeValue">-∞ dB</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="tab-view" class="tab-pane">
+                <div class="control-group toggle">
+                    <input type="checkbox" id="showSources" checked>
+                    <label for="showSources">Show Sources</label>
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="showSourceLabels">
+                    <label for="showSourceLabels">Show Source Labels</label>
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="lockSourcePositions" checked>
+                    <label for="lockSourcePositions">Lock Source Positions</label>
+                </div>
+            </div>
+            
+            <div id="tab-rings" class="tab-pane">
+                <div class="control-group">
+                    <label>Ring Radii (comma-separated):</label>
+                    <input type="text" id="ringRadiiInput" value="40,70,100,130,160,190,220">
+                    <button id="applyRingsBtn" style="margin-top: 5px; width: 100%;">Apply Rings</button>
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="snapToRings">
+                    <label for="snapToRings">Snap to Rings</label>
+                </div>
+            </div>
+            
+            <div id="tab-debug" class="tab-pane">
+                <div class="control-group toggle">
+                    <input type="checkbox" id="debugVisuals">
+                    <label for="debugVisuals">Debug Visuals (Canvas)</label>
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="debugOverlay">
+                    <label for="debugOverlay">Debug Overlay (Info Panel)</label>
+                </div>
+                <h3 style="margin-top: 15px; margin-bottom: 10px; font-size: 13px; color: #ccc;">Background Image</h3>
+                <div class="control-group">
+                    <label>Current Image:</label>
+                    <input type="text" id="bgImageUrl" value="ses_cetveli_v3.jpg" style="margin-bottom: 5px;">
+                    <div style="display: flex; gap: 5px; margin-bottom: 5px;">
+                        <button id="reloadBgBtn" style="flex: 1;">Reload Background</button>
+                    </div>
+                    <div id="bgStatus" style="font-size: 11px; padding: 5px; background: #1a1a1a; border: 1px solid #444; border-radius: 3px; min-height: 20px;">
+                        <span style="color: #888;">Status: </span><span id="bgStatusText">LOADING...</span>
+                    </div>
+                    <div id="bgDebug" style="font-size: 10px; padding: 3px; margin-top: 5px; color: #888; font-family: monospace;">
+                        Attempting to load: <span id="bgDebugSrc">-</span>
+                    </div>
+                    <div id="fileProtocolWarning" style="display: none; font-size: 10px; padding: 5px; margin-top: 5px; background: #3a2a1a; border: 1px solid #664400; border-radius: 3px; color: #ffaa00;">
+                        ⚠ You are running via file://. Use a local server (http://) for reliable asset loading.
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label>Load Background Image:</label>
+                    <input type="file" id="bgImageFile" accept="image/*" style="margin-top: 4px;">
+                    <div style="font-size: 10px; color: #888; margin-top: 4px;">
+                        Select a local image file to use as background
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label>Live Readout</label>
+                    <div id="readout" class="readout">Waiting for audio to start...</div>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+    
+    <script>
+        // Helper functions
+        function dbToLin(db) {
+            return Math.pow(10, db / 20);
+        }
+        
+        function linToDb(lin) {
+            return 20 * Math.log10(Math.max(lin, 0.00001));
+        }
+        
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(max, value));
+        }
+        
+        function distance(x1, y1, x2, y2) {
+            return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        }
+        
+        // Default background image source (canonical)
+        const DEFAULT_BG_SRC = 'ses_cetveli_v3.jpg';
+        
+        // Protocol detection
+        const isFileProtocol = (window.location.protocol === 'file:');
+        
+        // State
+        const state = {
+            audioCtx: null,
+            masterGain: null,
+            masterAnalyser: null,
+            listener: { x: 234.1, y: 234.8 },
+            sources: [],
+            ringRadii: [40, 70, 100, 130, 160, 190, 220],
+            ringCenter: { x: 240, y: 240 },
+            snapToRings: false, // Default OFF
+            debugVisuals: false, // Default: hidden
+            debugOverlayVisible: false, // Default: hidden
+            showSources: true, // Default: show sources
+            showSourceLabels: false, // Default: hide labels
+            showSourceRanges: true, // Default: show range circles
+            lockSourcePositions: true, // Default: locked
+            panningEnabled: true,
+            panDistance: 120,
+            nearestN: 4,
+            globalRmax: 80,
+            falloffPower: 2.2,
+            masterVolume: 0,
+            isPlaying: false,
+            dragging: null,
+            dragType: null, // 'listener' or source index
+            dragStartRadius: null, // Radius from ring center when drag started (for snap to rings)
+            worldSize: 240,
+            canvasPixelSize: 240,
+            scale: 1,
+            bgImage: {
+                image: null,
+                status: 'LOADING', // LOADING, LOADED, ERROR
+                src: DEFAULT_BG_SRC,
+                errorMessage: null,
+                naturalWidth: 0,
+                naturalHeight: 0,
+            },
+            framesDrawn: 0,
+            visualPower: 1.8, // Visual falloff power for alpha
+            visualTau: 0.18, // Visual alpha smoothing time constant (seconds)
+            lastFrameTime: performance.now(),
+        };
+        
+        // Canvas setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas ? canvas.getContext('2d') : null;
+        const canvasContainer = document.getElementById('canvas-container');
+        const controlPanel = document.getElementById('control-panel');
+        
+        // Safety check
+        if (!canvas || !ctx) {
+            console.error('Canvas or context not available');
+        }
+        
+        // Check for file:// protocol and show warning
+        if (isFileProtocol) {
+            const warning = document.getElementById('fileProtocolWarning');
+            if (warning) {
+                warning.style.display = 'block';
+            }
+            // Make URL input read-only in file:// mode (it's just for display)
+            const urlInput = document.getElementById('bgImageUrl');
+            if (urlInput) {
+                urlInput.readOnly = true;
+                urlInput.title = 'In file:// mode, use the file picker below to select an image';
+            }
+        }
+        
+        // Background image management - ONE canonical image object
+        function initBgImage() {
+            // Create the ONE canonical image object
+            const img = new Image();
+            img.crossOrigin = 'anonymous'; // Allow CORS if needed
+            
+            // Set up handlers on the canonical image object
+            img.onload = () => {
+                state.bgImage.status = 'LOADED';
+                state.bgImage.naturalWidth = img.naturalWidth;
+                state.bgImage.naturalHeight = img.naturalHeight;
+                state.bgImage.errorMessage = null;
+                // Update URL input if it doesn't match current src
+                const urlInput = document.getElementById('bgImageUrl');
+                if (urlInput && urlInput.value !== state.bgImage.src) {
+                    // Only update if src is a filename (from file input), not a full URL or data URL
+                    if (state.bgImage.src && !state.bgImage.src.includes('://') && !state.bgImage.src.startsWith('data:')) {
+                        urlInput.value = state.bgImage.src;
+                    }
+                }
+                updateBgStatus();
+                console.log('Background image loaded:', state.bgImage.src, `${img.naturalWidth}x${img.naturalHeight}`);
+                // Force immediate redraw when background loads
+                draw();
+            };
+            
+            img.onerror = (e) => {
+                state.bgImage.status = 'ERROR';
+                // Extract meaningful error info
+                const srcDisplay = state.bgImage.src || img.src || 'unknown';
+                state.bgImage.errorMessage = `Failed to load: ${srcDisplay}`;
+                state.bgImage.naturalWidth = 0;
+                state.bgImage.naturalHeight = 0;
+                updateBgStatus();
+                console.error('Background image error:', srcDisplay, e);
+                draw(); // Redraw to show placeholder
+            };
+            
+            // Store the canonical image object in state
+            state.bgImage.image = img;
+            return img;
+        }
+        
+        function loadBgImage(src, useCacheBust = false) {
+            // Use the SAME canonical image object
+            const img = state.bgImage.image;
+            if (!img) {
+                console.warn('Background image object not initialized, cannot load:', src);
+                state.bgImage.status = 'ERROR';
+                state.bgImage.errorMessage = 'Image object not initialized';
+                updateBgStatus();
+                return;
+            }
+            
+            state.bgImage.status = 'LOADING';
+            state.bgImage.errorMessage = null;
+            
+            // Update debug display
+            const debugSrc = document.getElementById('bgDebugSrc');
+            if (debugSrc) {
+                debugSrc.textContent = src;
+            }
+            
+            updateBgStatus();
+            
+            let finalSrc = src;
+            if (useCacheBust) {
+                const separator = src.includes('?') ? '&' : '?';
+                finalSrc = src + separator + 'v=' + Date.now();
+            }
+            
+            // Set src on the SAME canonical image object
+            try {
+                img.src = finalSrc;
+                state.bgImage.src = src; // Store original src (without cache-bust)
+                
+                // If image is already cached/loaded, onload might not fire
+                // Check after a microtask to ensure onload fires
+                setTimeout(() => {
+                    if (img.complete && img.naturalWidth > 0 && state.bgImage.status === 'LOADING') {
+                        // Image already loaded from cache, trigger onload manually
+                        img.onload();
+                    }
+                }, 0);
+            } catch (err) {
+                console.error('Error setting image src:', err);
+                state.bgImage.status = 'ERROR';
+                state.bgImage.errorMessage = `Failed to set src: ${src}`;
+                updateBgStatus();
+            }
+        }
+        
+        function updateBgStatus() {
+            const statusText = document.getElementById('bgStatusText');
+            const status = state.bgImage.status;
+            const src = state.bgImage.src || 'none';
+            
+            if (status === 'LOADING') {
+                statusText.textContent = `LOADING... (${src})`;
+                statusText.style.color = '#ffaa00';
+            } else if (status === 'LOADED') {
+                const dims = `${state.bgImage.naturalWidth} × ${state.bgImage.naturalHeight}`;
+                statusText.textContent = `LOADED (${dims}) - ${src}`;
+                statusText.style.color = '#00cc33';
+            } else if (status === 'ERROR') {
+                statusText.textContent = `ERROR: ${state.bgImage.errorMessage || 'Unknown error'} - ${src}`;
+                statusText.style.color = '#cc3300';
+            }
+        }
+        
+        // Update canvas size and scale
+        function updateCanvasSize() {
+            if (!canvas || !canvasContainer) {
+                console.warn('Canvas elements not available for sizing');
+                return;
+            }
+            
+            // Get available space (account for right panel)
+            const panel = document.getElementById('control-panel');
+            let panelWidth = 360; // Default width
+            if (panel) {
+                if (panel.classList.contains('collapsed')) {
+                    panelWidth = 40;
+                } else {
+                    panelWidth = panel.offsetWidth || 360;
+                }
+            }
+            
+            const availableHeight = window.innerHeight || 600;
+            const availableWidth = (window.innerWidth || 800) - panelWidth;
+            
+            // If panel width is invalid during init, schedule a retry
+            if (panelWidth <= 0 && state.canvasPixelSize === 240) {
+                // Schedule retry on next frame
+                requestAnimationFrame(() => {
+                    updateCanvasSize();
+                });
+                return;
+            }
+            
+            // Calculate largest square that fits
+            const canvasPixelSize = Math.max(100, Math.min(availableWidth, availableHeight));
+            state.canvasPixelSize = canvasPixelSize;
+            
+            // Set canvas element size
+            canvas.width = canvasPixelSize;
+            canvas.height = canvasPixelSize;
+            canvas.style.width = canvasPixelSize + 'px';
+            canvas.style.height = canvasPixelSize + 'px';
+            
+            // Calculate scale: world units (0..240) to canvas pixels
+            state.scale = canvasPixelSize / state.worldSize;
+            
+            // Ensure scale is valid
+            if (state.scale <= 0 || !isFinite(state.scale)) {
+                state.scale = 1;
+            }
+            
+            // Center the canvas container
+            canvasContainer.style.width = canvasPixelSize + 'px';
+            canvasContainer.style.height = canvasPixelSize + 'px';
+        }
+        
+        // Convert screen coordinates to world coordinates (0..240)
+        function screenToWorld(screenX, screenY) {
+            const rect = canvas.getBoundingClientRect();
+            const localX = screenX - rect.left;
+            const localY = screenY - rect.top;
+            return {
+                x: localX / state.scale,
+                y: localY / state.scale
+            };
+        }
+        
+        // Initialize default sources
+        function initDefaultSources() {
+            // 21 sources: A1-A7, B1-B6, C1-C4, D1-D4
+            const sourceNames = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'C1', 'C2', 'C3', 'C4', 'D1', 'D2', 'D3', 'D4'];
+            
+            // A group: A1 (194, 206) to A7 (30, 95) - 7 sources, 6 intervals
+            const a1 = { x: 194, y: 206 };
+            const a7 = { x: 30, y: 95 };
+            const aPositions = [];
+            for (let i = 0; i < 7; i++) {
+                aPositions.push({
+                    x: a1.x + (i / 6) * (a7.x - a1.x),
+                    y: a1.y + (i / 6) * (a7.y - a1.y)
+                });
+            }
+            
+            // B group: B1 (180, 159) to B6 (90, 36) - 6 sources, 5 intervals
+            const b1 = { x: 180, y: 159 };
+            const b6 = { x: 90, y: 36 };
+            const bPositions = [];
+            for (let i = 0; i < 6; i++) {
+                bPositions.push({
+                    x: b1.x + (i / 5) * (b6.x - b1.x),
+                    y: b1.y + (i / 5) * (b6.y - b1.y)
+                });
+            }
+            
+            // C group: C1 (116, 221) to C4 (22, 172) - symmetric distribution
+            const c1 = { x: 116, y: 221 };
+            const c4 = { x: 22, y: 172 };
+            // Linear interpolation for C2 and C3
+            const c2 = {
+                x: c1.x + (c4.x - c1.x) / 3,
+                y: c1.y + (c4.y - c1.y) / 3
+            };
+            const c3 = {
+                x: c1.x + 2 * (c4.x - c1.x) / 3,
+                y: c1.y + 2 * (c4.y - c1.y) / 3
+            };
+            
+            // D group: D1 (221, 116) to D4 (172, 22) - symmetric distribution
+            const d1 = { x: 221, y: 116 };
+            const d4 = { x: 172, y: 22 };
+            // Linear interpolation for D2 and D3
+            const d2 = {
+                x: d1.x + (d4.x - d1.x) / 3,
+                y: d1.y + (d4.y - d1.y) / 3
+            };
+            const d3 = {
+                x: d1.x + 2 * (d4.x - d1.x) / 3,
+                y: d1.y + 2 * (d4.y - d1.y) / 3
+            };
+            
+            const defaultPositions = [...aPositions, ...bPositions, c1, c2, c3, c4, d1, d2, d3, d4];
+            
+            // Special rmax values for specific sources
+            const specialRmax = {
+                'B1': 40,
+                'C2': 110,
+                'C3': 90,
+                'D2': 110,
+                'D3': 90
+            };
+            
+            for (let i = 0; i < 21; i++) {
+                const pos = defaultPositions[i];
+                const sourceId = sourceNames[i];
+                state.sources.push({
+                    id: sourceId,
+                    x: pos.x,
+                    y: pos.y,
+                    audioBuffer: null,
+                    sourceNode: null,
+                    gainNode: null,
+                    pannerNode: null,
+                    rmax: specialRmax[sourceId] || state.globalRmax,
+                    falloffPower: state.falloffPower,
+                    muted: false,
+                    solo: false,
+                    visualAlpha: 0, // Current visual alpha (smoothed)
+                });
+            }
+            updateSourcesList();
+            updateMixerList();
+        }
+        
+        // Auto-load audio files matching source names
+        async function autoLoadSourceAudio(source, index) {
+            // Only try in http:// protocol (file:// won't work due to browser security)
+            if (isFileProtocol) {
+                // Silently skip - user should use "Load Audio Files" button in Sources tab
+                return;
+            }
+            
+            // Try different audio file extensions
+            const extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.webm'];
+            const sourceName = source.id;
+            
+            // Ensure audio context exists
+            if (!state.audioCtx) {
+                try {
+                    initAudio();
+                } catch (err) {
+                    console.warn(`[Auto-load] Failed to init audio context for ${sourceName}:`, err);
+                    return;
+                }
+            }
+            
+            if (!state.audioCtx) {
+                console.warn(`[Auto-load] Audio context not available for ${sourceName}`);
+                return;
+            }
+            
+            // Try each extension
+            for (const ext of extensions) {
+                const filename = sourceName + ext;
+                try {
+                    const response = await fetch(filename);
+                    if (response.ok) {
+                        const arrayBuffer = await response.arrayBuffer();
+                        const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                        state.sources[index].audioBuffer = audioBuffer;
+                        console.log(`[Auto-load] ✓ Loaded ${sourceName}: ${filename}`);
+                        updateSourcesList();
+                        return; // Success, stop trying other extensions
+                    } else {
+                        // Log non-OK responses for debugging
+                        if (ext === extensions[0]) { // Only log first attempt to avoid spam
+                            console.log(`[Auto-load] ${sourceName}: ${filename} returned status ${response.status}`);
+                        }
+                    }
+                } catch (err) {
+                    // File not found or other error, try next extension
+                    if (ext === extensions[extensions.length - 1]) {
+                        // Only log on last extension to avoid spam
+                        console.log(`[Auto-load] ${sourceName}: No audio file found (tried: ${extensions.join(', ')})`);
+                    }
+                    continue;
+                }
+            }
+        }
+        
+        // Load audio files for all sources
+        async function autoLoadAllSourceAudio() {
+            // Only try in http:// protocol
+            if (isFileProtocol) {
+                console.log('[Auto-load] file:// protocol detected. Use "Load Audio Files" in Sources tab to load audio files.');
+                return;
+            }
+            
+            console.log('[Auto-load] Starting auto-load for all sources...');
+            
+            // Wait a bit for audio context to be ready
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // Try to initialize audio context if not already done
+            if (!state.audioCtx) {
+                try {
+                    initAudio();
+                } catch (err) {
+                    console.warn('[Auto-load] Could not initialize audio context:', err);
+                }
+            }
+            
+            let loadedCount = 0;
+            for (let i = 0; i < state.sources.length; i++) {
+                const source = state.sources[i];
+                // Only load if not already loaded
+                if (!source.audioBuffer) {
+                    await autoLoadSourceAudio(source, i);
+                    if (state.sources[i].audioBuffer) {
+                        loadedCount++;
+                    }
+                    // Small delay between requests to avoid overwhelming
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+            }
+            
+            if (loadedCount > 0) {
+                console.log(`[Auto-load] Successfully loaded ${loadedCount} audio files`);
+                updateSourcesList();
+            } else {
+                console.log('[Auto-load] No audio files found. Make sure files are named like A1.mp3, A2.wav, etc.');
+            }
+        }
+        
+        // Ring snapping
+        function snapToNearestRing(x, y, useFixedRadius = false) {
+            if (!state.snapToRings) return { x, y };
+            
+            const dx = x - state.ringCenter.x;
+            const dy = y - state.ringCenter.y;
+            const angle = Math.atan2(dy, dx); // Always use current mouse angle
+            
+            // Use fixed radius from drag start if available
+            let radius;
+            if (useFixedRadius && state.dragStartRadius !== null) {
+                radius = state.dragStartRadius;
+            } else {
+                // Calculate current distance and snap to nearest ring
+                const currentDist = Math.sqrt(dx * dx + dy * dy);
+                let nearestRadius = state.ringRadii[0];
+                let minDiff = Math.abs(currentDist - nearestRadius);
+                
+                for (const r of state.ringRadii) {
+                    const diff = Math.abs(currentDist - r);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        nearestRadius = r;
+                    }
+                }
+                radius = nearestRadius;
+            }
+            
+            const snappedX = state.ringCenter.x + Math.cos(angle) * radius;
+            const snappedY = state.ringCenter.y + Math.sin(angle) * radius;
+            
+            return {
+                x: clamp(snappedX, 0, 240),
+                y: clamp(snappedY, 0, 240)
+            };
+        }
+        
+        // Audio setup
+        function initAudio() {
+            if (state.audioCtx) return;
+            
+            state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            state.masterGain = state.audioCtx.createGain();
+            
+            // Create analyser for volume meter
+            state.masterAnalyser = state.audioCtx.createAnalyser();
+            state.masterAnalyser.fftSize = 2048;
+            state.masterAnalyser.smoothingTimeConstant = 0.3;
+            
+            // Connect: masterGain -> analyser -> destination
+            state.masterGain.connect(state.masterAnalyser);
+            state.masterAnalyser.connect(state.audioCtx.destination);
+            
+            state.masterGain.gain.value = dbToLin(state.masterVolume);
+        }
+        
+        function startAudio() {
+            if (!state.audioCtx) {
+                initAudio();
+            }
+            
+            if (state.audioCtx.state === 'suspended') {
+                state.audioCtx.resume();
+            }
+            
+            // Start all sources with audio buffers
+            for (const source of state.sources) {
+                if (source.audioBuffer && !source.sourceNode) {
+                    startSource(source);
+                }
+            }
+            
+            state.isPlaying = true;
+            updateAudioStatus();
+            // Note: renderLoop is already running, no need to call animate()
+        }
+        
+        function stopAudio() {
+            if (!state.audioCtx) return;
+            
+            for (const source of state.sources) {
+                if (source.sourceNode) {
+                    source.sourceNode.stop();
+                    source.sourceNode = null;
+                }
+            }
+            
+            state.audioCtx.suspend();
+            state.isPlaying = false;
+            updateAudioStatus();
+        }
+        
+        function startSource(source) {
+            if (!state.audioCtx || !source.audioBuffer) return;
+            
+            const sourceNode = state.audioCtx.createBufferSource();
+            sourceNode.buffer = source.audioBuffer;
+            sourceNode.loop = true;
+            
+            const gainNode = state.audioCtx.createGain();
+            const pannerNode = state.audioCtx.createStereoPanner();
+            
+            sourceNode.connect(gainNode);
+            gainNode.connect(pannerNode);
+            pannerNode.connect(state.masterGain);
+            
+            source.sourceNode = sourceNode;
+            source.gainNode = gainNode;
+            source.pannerNode = pannerNode;
+            
+            gainNode.gain.value = 0;
+            pannerNode.pan.value = 0;
+            
+            sourceNode.start(0);
+        }
+        
+        function updateSourceAudio(source, isInNearestN) {
+            if (!state.isPlaying || !source.gainNode) return;
+            
+            const d = distance(state.listener.x, state.listener.y, source.x, source.y);
+            const dx = source.x - state.listener.x;
+            
+            // Calculate target gain
+            let targetGain = 0;
+            if (isInNearestN && d < source.rmax) {
+                const normalized = 1 - (d / source.rmax);
+                const curved = Math.pow(normalized, source.falloffPower);
+                const gainMaxLinear = dbToLin(-4);
+                targetGain = curved * gainMaxLinear;
+            }
+            
+            // Check if any source is solo
+            const hasSolo = state.sources.some(s => s.solo);
+            
+            // Apply mute/solo logic
+            if (hasSolo) {
+                // If any source is solo, only solo sources play
+                if (!source.solo) {
+                    targetGain = 0;
+                }
+            } else {
+                // If no solo, apply mute normally
+                if (source.muted) {
+                    targetGain = 0;
+                }
+            }
+            
+            // Smooth gain update
+            const now = state.audioCtx.currentTime;
+            source.gainNode.gain.setTargetAtTime(targetGain, now, 0.05);
+            
+            // Calculate pan
+            if (state.panningEnabled) {
+                const pan = clamp(dx / state.panDistance, -1, 1);
+                source.pannerNode.pan.setTargetAtTime(pan, now, 0.05);
+            } else {
+                source.pannerNode.pan.setTargetAtTime(0, now, 0.05);
+            }
+        }
+        
+        function updateAllAudio() {
+            if (!state.isPlaying) return;
+            
+            // Get all sources with audio, compute distances and sort
+            const sourcesWithAudio = state.sources
+                .map((source, index) => ({
+                    source,
+                    index,
+                    distance: distance(state.listener.x, state.listener.y, source.x, source.y)
+                }))
+                .filter(item => item.source.audioBuffer && item.source.gainNode)
+                .sort((a, b) => a.distance - b.distance);
+            
+            // Mark which sources are in nearest N
+            const nearestNIndices = new Set();
+            for (let i = 0; i < Math.min(state.nearestN, sourcesWithAudio.length); i++) {
+                nearestNIndices.add(sourcesWithAudio[i].index);
+            }
+            
+            // Update all sources
+            for (let i = 0; i < state.sources.length; i++) {
+                const source = state.sources[i];
+                if (source.audioBuffer && source.gainNode) {
+                    updateSourceAudio(source, nearestNIndices.has(i));
+                }
+            }
+        }
+        
+        // Update visual alpha for all sources (smooth fade)
+        function updateVisualAlpha() {
+            const currentTime = performance.now();
+            const dt = (currentTime - state.lastFrameTime) / 1000; // Convert to seconds
+            state.lastFrameTime = currentTime;
+            
+            // Get all sources with audio, compute distances and sort
+            const sourcesWithAudio = state.sources
+                .map((source, index) => ({
+                    source,
+                    index,
+                    distance: distance(state.listener.x, state.listener.y, source.x, source.y)
+                }))
+                .filter(item => item.source.audioBuffer)
+                .sort((a, b) => a.distance - b.distance);
+            
+            // Mark which sources are in nearest N
+            const nearestNIndices = new Set();
+            for (let i = 0; i < Math.min(state.nearestN, sourcesWithAudio.length); i++) {
+                nearestNIndices.add(sourcesWithAudio[i].index);
+            }
+            
+            // Update visual alpha for all sources
+            for (let i = 0; i < state.sources.length; i++) {
+                const source = state.sources[i];
+                if (!source.audioBuffer) {
+                    source.visualAlpha = 0;
+                    continue;
+                }
+                
+                const d = distance(state.listener.x, state.listener.y, source.x, source.y);
+                
+                // Calculate target alpha
+                let visualAlphaTarget = 0;
+                if (nearestNIndices.has(i) && d < source.rmax) {
+                    const normalized = clamp(1 - (d / source.rmax), 0, 1);
+                    visualAlphaTarget = Math.pow(normalized, state.visualPower);
+                }
+                
+                // Smooth the alpha with exponential smoothing
+                const smoothingFactor = 1 - Math.exp(-dt / state.visualTau);
+                source.visualAlpha += (visualAlphaTarget - source.visualAlpha) * smoothingFactor;
+            }
+        }
+        
+        // Drawing - all coordinates in world space (0..240)
+        function draw() {
+            if (!ctx || !canvas) {
+                console.warn('Canvas not initialized, skipping draw');
+                return;
+            }
+            
+            // Increment frame counter
+            state.framesDrawn++;
+            
+            // Update debug overlay
+            updateDebugOverlay();
+            
+            // Clear entire canvas
+            const pixelSize = state.canvasPixelSize || 240;
+            ctx.clearRect(0, 0, pixelSize, pixelSize);
+            
+            // Set transform: scale world coordinates (0..240) to fill canvas pixels
+            const scale = state.scale > 0 ? state.scale : 1;
+            ctx.setTransform(scale, 0, 0, scale, 0, 0);
+            
+            // Draw background image in world space
+            const bgImg = state.bgImage.image;
+            if (bgImg && bgImg.complete && bgImg.naturalWidth > 0) {
+                // Image is loaded and ready - draw it
+                ctx.drawImage(bgImg, 0, 0, state.worldSize, state.worldSize);
+                
+                // Draw "BG LOADED" badge in debug mode
+                if (state.debugVisuals) {
+                    ctx.fillStyle = 'rgba(0, 204, 51, 0.7)';
+                    ctx.fillRect(5, 5, 70, 15);
+                    ctx.fillStyle = '#000';
+                    ctx.font = '10px sans-serif';
+                    ctx.fillText('BG LOADED', 8, 16);
+                }
+            } else {
+                // Draw placeholder: checkerboard pattern
+                const checkerSize = 10;
+                for (let y = 0; y < state.worldSize; y += checkerSize) {
+                    for (let x = 0; x < state.worldSize; x += checkerSize) {
+                        const isEven = ((x / checkerSize) + (y / checkerSize)) % 2 === 0;
+                        ctx.fillStyle = isEven ? '#1a1a1a' : '#2a2a2a';
+                        ctx.fillRect(x, y, checkerSize, checkerSize);
+                    }
+                }
+                
+                // Draw subtle status text (non-fatal, small)
+                if (state.bgImage.status === 'ERROR') {
+                    ctx.fillStyle = 'rgba(204, 51, 0, 0.5)';
+                    ctx.font = '10px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('BG: ' + (state.bgImage.errorMessage || 'Error'), state.worldSize / 2, state.worldSize - 10);
+                }
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'alphabetic';
+            }
+            
+            // Draw ring center marker (bottom-right) in world space
+            if (state.debugVisuals) {
+                ctx.strokeStyle = '#666';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(state.ringCenter.x, state.ringCenter.y, 3, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            
+            // Check if any source is solo
+            const hasSolo = state.sources.some(s => s.solo);
+            
+            // Draw sources in world space (only if showSources is enabled)
+            if (state.showSources) {
+                for (let i = 0; i < state.sources.length; i++) {
+                    const source = state.sources[i];
+                    
+                    // Determine if this source should show range circles
+                    // Don't show if muted, and respect solo logic
+                    const shouldShowRange = state.showSourceRanges && source.audioBuffer && 
+                        !source.muted && (!hasSolo || source.solo);
+                
+                // Draw audible radius with smooth fade
+                if (shouldShowRange) {
+                    // Draw subtle gray inactive ring (constant, low opacity)
+                    ctx.strokeStyle = 'rgba(102, 102, 102, 0.2)';
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([2, 2]);
+                    ctx.beginPath();
+                    ctx.arc(source.x, source.y, source.rmax, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    
+                    // Draw active ring with smooth alpha fade (yellow if solo, green otherwise)
+                    const alpha = clamp(source.visualAlpha || 0, 0, 1);
+                    if (alpha > 0.01) {
+                        if (source.solo) {
+                            ctx.strokeStyle = `rgba(255, 255, 0, ${alpha})`; // Yellow for solo
+                        } else {
+                            ctx.strokeStyle = `rgba(0, 255, 0, ${alpha})`; // Green for normal
+                        }
+                        ctx.lineWidth = 1;
+                        ctx.setLineDash([2, 2]);
+                        ctx.beginPath();
+                        ctx.arc(source.x, source.y, source.rmax, 0, Math.PI * 2);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+                    }
+                }
+                
+                // Draw source point (yellow if solo, orange if has audio, gray otherwise)
+                // Apply 50% opacity if muted
+                let fillColor;
+                if (source.solo) {
+                    fillColor = '#ffff00'; // Yellow for solo
+                } else if (source.audioBuffer) {
+                    fillColor = '#04427b'; // Dark blue for normal
+                } else {
+                    fillColor = '#666'; // Gray for no audio
+                }
+                
+                // Apply opacity if muted
+                if (source.muted) {
+                    ctx.globalAlpha = 0.5;
+                } else {
+                    ctx.globalAlpha = 1.0;
+                }
+                
+                ctx.fillStyle = fillColor;
+                ctx.beginPath();
+                ctx.arc(source.x, source.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Reset global alpha
+                ctx.globalAlpha = 1.0;
+                
+                // Draw label (A1, A2, B1, B2, etc.) if enabled
+                if (state.showSourceLabels) {
+                    const labelText = source.id;
+                    // Apply opacity if muted
+                    if (source.muted) {
+                        ctx.globalAlpha = 0.5;
+                    } else {
+                        ctx.globalAlpha = 1.0;
+                    }
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '8px sans-serif';
+                    // Add subtle outline for readability
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+                    ctx.lineWidth = 2;
+                    ctx.lineJoin = 'round';
+                    ctx.miterLimit = 2;
+                    ctx.strokeText(labelText, source.x + 6, source.y - 6);
+                    ctx.fillText(labelText, source.x + 6, source.y - 6);
+                    // Reset global alpha
+                    ctx.globalAlpha = 1.0;
+                }
+                
+                // Draw line to listener if debug (with smooth alpha fade)
+                if (state.debugVisuals && source.audioBuffer) {
+                    const alpha = clamp(source.visualAlpha || 0, 0, 1);
+                    if (alpha > 0.01) {
+                        ctx.strokeStyle = `rgba(0, 255, 0, ${alpha * 0.5})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.beginPath();
+                        ctx.moveTo(source.x, source.y);
+                        ctx.lineTo(state.listener.x, state.listener.y);
+                        ctx.stroke();
+                    }
+                }
+                }
+            }
+            
+            // Draw listener in world space
+            ctx.fillStyle = '#00ff00';
+            ctx.beginPath();
+            ctx.arc(state.listener.x, state.listener.y, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Reset transform
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        
+        // Render loop (independent of audio, always runs)
+        // Update master volume meter
+        function updateMasterVolumeMeter() {
+            if (!state.masterAnalyser || !state.isPlaying) {
+                const bar = document.getElementById('masterVolumeBar');
+                const value = document.getElementById('masterVolumeValue');
+                if (bar) {
+                    bar.style.width = '0%';
+                    bar.style.background = '#00cc33';
+                }
+                if (value) value.textContent = '-∞ dB';
+                return;
+            }
+            
+            const dataArray = new Uint8Array(state.masterAnalyser.frequencyBinCount);
+            state.masterAnalyser.getByteFrequencyData(dataArray);
+            
+            // Calculate RMS (root mean square) for volume level
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                const normalized = dataArray[i] / 255.0;
+                sum += normalized * normalized;
+            }
+            const rms = Math.sqrt(sum / dataArray.length);
+            
+            // Convert to dB (0-255 range, -60dB to 0dB approximately)
+            const db = rms > 0 ? 20 * Math.log10(rms) : -60;
+            const normalizedDb = Math.max(0, Math.min(1, (db + 60) / 60)); // Normalize -60dB to 0dB as 0 to 1
+            
+            // Calculate color based on dB level with fade transitions
+            let color;
+            if (db < -12) {
+                // -60 to -12: Green
+                color = '#00cc33';
+            } else if (db < -6) {
+                // -12 to -6: Green to Yellow (fade)
+                const t = (db + 12) / 6; // 0 to 1
+                const r = Math.round(0 + t * 255);
+                const g = Math.round(204 + t * 51);
+                const b = Math.round(51 - t * 51);
+                color = `rgb(${r}, ${g}, ${b})`;
+            } else if (db < -2) {
+                // -6 to -2: Yellow to Orange (fade)
+                const t = (db + 6) / 4; // 0 to 1
+                const r = Math.round(255);
+                const g = Math.round(255 - t * 153); // 255 to 102
+                const b = Math.round(0);
+                color = `rgb(${r}, ${g}, ${b})`;
+            } else {
+                // -2 to 0: Orange to Red (fade)
+                const t = (db + 2) / 2; // 0 to 1
+                const r = Math.round(255);
+                const g = Math.round(102 - t * 102); // 102 to 0
+                const b = Math.round(0);
+                color = `rgb(${r}, ${g}, ${b})`;
+            }
+            
+            // Update UI
+            const bar = document.getElementById('masterVolumeBar');
+            const value = document.getElementById('masterVolumeValue');
+            if (bar) {
+                bar.style.width = (normalizedDb * 100) + '%';
+                bar.style.background = color;
+            }
+            if (value) {
+                value.textContent = db.toFixed(1) + ' dB';
+            }
+        }
+        
+        function renderLoop() {
+            // Update visual alpha (always, for smooth fading)
+            updateVisualAlpha();
+            
+            // Update master volume meter
+            updateMasterVolumeMeter();
+            
+            draw();
+            
+            // Update audio if playing
+            if (state.isPlaying) {
+                updateAllAudio();
+                updateReadout();
+            }
+            
+            requestAnimationFrame(renderLoop);
+        }
+        
+        // Animation loop (legacy, kept for compatibility)
+        function animate() {
+            if (!state.isPlaying) return;
+            
+            draw();
+            
+            // Update all source audio (with nearest N constraint)
+            updateAllAudio();
+            
+            // Update readout
+            updateReadout();
+            
+            requestAnimationFrame(animate);
+        }
+        
+        // Update debug overlay
+        function updateDebugOverlay() {
+            const bgState = document.getElementById('debug-bgState');
+            const bgSrc = document.getElementById('debug-bgSrc');
+            const scale = document.getElementById('debug-scale');
+            const canvasSize = document.getElementById('debug-canvasSize');
+            const frames = document.getElementById('debug-frames');
+            
+            if (bgState) bgState.textContent = state.bgImage.status;
+            if (bgSrc) bgSrc.textContent = state.bgImage.src || '-';
+            if (scale) scale.textContent = state.scale.toFixed(2);
+            if (canvasSize) canvasSize.textContent = state.canvasPixelSize;
+            if (frames) frames.textContent = state.framesDrawn;
+        }
+        
+        // Readout
+        function updateReadout() {
+            const readout = document.getElementById('readout');
+            let text = `Listener: (${state.listener.x.toFixed(1)}, ${state.listener.y.toFixed(1)})\n\n`;
+            
+            // Get active sources
+            const activeSources = state.sources
+                .map((source, index) => ({
+                    source,
+                    index,
+                    distance: distance(state.listener.x, state.listener.y, source.x, source.y)
+                }))
+                .filter(item => item.source.audioBuffer && item.source.gainNode)
+                .sort((a, b) => a.distance - b.distance)
+                .slice(0, state.nearestN);
+            
+            text += `Active Sources (${activeSources.length}):\n`;
+            for (const item of activeSources) {
+                const source = item.source;
+                const currentGain = source.gainNode.gain.value;
+                const targetGain = currentGain; // Approximate
+                const pan = source.pannerNode.pan.value;
+                
+                text += `  ${source.id}:\n`;
+                text += `    Dist: ${item.distance.toFixed(1)}\n`;
+                text += `    Gain: ${targetGain.toFixed(3)} (${linToDb(targetGain).toFixed(1)} dB)\n`;
+                text += `    Pan: ${pan.toFixed(2)}\n`;
+            }
+            
+            readout.textContent = text;
+        }
+        
+        // UI Updates
+        function updateAudioStatus() {
+            // Update tab status
+            const status = document.getElementById('audioStatus');
+            if (status) {
+                status.textContent = state.isPlaying ? 'PLAYING' : 'STOPPED';
+                status.className = 'status ' + (state.isPlaying ? 'playing' : 'stopped');
+            }
+            // Update HUD status
+            const hudStatus = document.getElementById('hudStatus');
+            if (hudStatus) {
+                hudStatus.textContent = state.isPlaying ? 'PLAYING' : 'STOPPED';
+                hudStatus.className = 'hud-status ' + (state.isPlaying ? 'playing' : 'stopped');
+            }
+        }
+        
+        function updateMixerList() {
+            const list = document.getElementById('mixerList');
+            if (!list) return;
+            list.innerHTML = '';
+            
+            for (let i = 0; i < state.sources.length; i++) {
+                const source = state.sources[i];
+                const item = document.createElement('div');
+                item.className = 'mixer-item';
+                item.style.cssText = 'padding: 8px; margin-bottom: 5px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a;';
+                
+                item.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: bold; color: ${source.solo ? '#ffff00' : '#fff'};">${source.id}</span>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="mixer-mute" data-index="${i}" style="padding: 4px 12px; font-size: 11px; ${source.muted ? 'background: #ff4444;' : 'background: #555;'} color: #fff; border: none; border-radius: 3px; cursor: pointer;">
+                                ${source.muted ? 'Unmute' : 'Mute'}
+                            </button>
+                            <button class="mixer-solo" data-index="${i}" style="padding: 4px 12px; font-size: 11px; ${source.solo ? 'background: #ffff00; color: #000;' : 'background: #555; color: #fff;'} border: none; border-radius: 3px; cursor: pointer;">
+                                ${source.solo ? 'Unsolo' : 'Solo'}
+                            </button>
+                        </div>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <label style="display: block; font-size: 11px; color: #ccc; margin-bottom: 4px;">Rmax: <span class="mixer-rmax-value-${i}">${source.rmax}</span></label>
+                        <input type="range" class="mixer-rmax" data-index="${i}" min="20" max="200" value="${source.rmax}" step="5" style="width: 100%;">
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <label style="display: block; font-size: 11px; color: #ccc; margin-bottom: 4px;">Falloff Power: <span class="mixer-falloff-value-${i}">${source.falloffPower.toFixed(1)}</span></label>
+                        <input type="range" class="mixer-falloff" data-index="${i}" min="0.5" max="5" value="${source.falloffPower}" step="0.1" style="width: 100%;">
+                    </div>
+                `;
+                
+                list.appendChild(item);
+            }
+            
+            // Attach event listeners
+            document.querySelectorAll('.mixer-mute').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    state.sources[index].muted = !state.sources[index].muted;
+                    updateMixerList();
+                });
+            });
+            
+            document.querySelectorAll('.mixer-solo').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    state.sources[index].solo = !state.sources[index].solo;
+                    updateMixerList();
+                });
+            });
+            
+            document.querySelectorAll('.mixer-rmax').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const value = parseFloat(e.target.value);
+                    state.sources[index].rmax = value;
+                    document.querySelector(`.mixer-rmax-value-${index}`).textContent = value;
+                });
+            });
+            
+            document.querySelectorAll('.mixer-falloff').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const value = parseFloat(e.target.value);
+                    state.sources[index].falloffPower = value;
+                    document.querySelector(`.mixer-falloff-value-${index}`).textContent = value.toFixed(1);
+                });
+            });
+        }
+        
+        function updateSourcesList() {
+            const list = document.getElementById('sourcesList');
+            list.innerHTML = '';
+            
+            for (let i = 0; i < state.sources.length; i++) {
+                const source = state.sources[i];
+                const item = document.createElement('div');
+                item.className = 'source-item';
+                if (source.audioBuffer && source.gainNode && source.gainNode.gain.value > 0.001) {
+                    item.classList.add('active-source');
+                }
+                
+                item.innerHTML = `
+                    <div class="source-header">
+                        <input type="text" class="source-name" value="${source.id}" data-index="${i}">
+                        <div class="source-controls">
+                            <button class="delete-source" data-index="${i}">Delete</button>
+                        </div>
+                    </div>
+                    <div class="source-info">
+                        Position: (${source.x.toFixed(1)}, ${source.y.toFixed(1)})
+                    </div>
+                    <div class="control-group">
+                        <label>Audio File:</label>
+                        <input type="file" class="source-audio" data-index="${i}" accept="audio/*">
+                        <span class="audio-status-${i}" style="font-size: 10px; color: #888;">
+                            ${source.audioBuffer ? '✓ Loaded' : 'No audio'}
+                        </span>
+                    </div>
+                `;
+                
+                list.appendChild(item);
+            }
+            
+            // Attach event listeners
+            document.querySelectorAll('.source-name').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    state.sources[index].id = e.target.value;
+                });
+            });
+            
+            document.querySelectorAll('.source-audio').forEach(input => {
+                input.addEventListener('change', async (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    
+                    try {
+                        // Ensure audio context exists
+                        if (!state.audioCtx) {
+                            initAudio();
+                        }
+                        
+                        const arrayBuffer = await file.arrayBuffer();
+                        const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                        state.sources[index].audioBuffer = audioBuffer;
+                        document.querySelector(`.audio-status-${index}`).textContent = '✓ Loaded';
+                        
+                        if (state.isPlaying) {
+                            startSource(state.sources[index]);
+                        }
+                    } catch (err) {
+                        console.error('Failed to decode audio:', err);
+                        document.querySelector(`.audio-status-${index}`).textContent = '✗ Error';
+                    }
+                });
+            });
+            
+            document.querySelectorAll('.delete-source').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const source = state.sources[index];
+                    if (source.sourceNode) {
+                        source.sourceNode.stop();
+                    }
+                    state.sources.splice(index, 1);
+                    updateSourcesList();
+                });
+            });
+        }
+        
+        // Canvas interaction with proper coordinate transform
+        canvas.addEventListener('mousedown', (e) => {
+            const world = screenToWorld(e.clientX, e.clientY);
+            const { x, y } = world;
+            
+            // Check if clicking listener
+            const listenerDist = distance(x, y, state.listener.x, state.listener.y);
+            if (listenerDist < 10) {
+                state.dragging = { x, y };
+                state.dragType = 'listener';
+                // Calculate and store radius from ring center if snap to rings is enabled
+                if (state.snapToRings) {
+                    const dx = state.listener.x - state.ringCenter.x;
+                    const dy = state.listener.y - state.ringCenter.y;
+                    state.dragStartRadius = Math.sqrt(dx * dx + dy * dy);
+                } else {
+                    state.dragStartRadius = null;
+                }
+                canvas.style.cursor = 'grabbing';
+                return;
+            }
+            
+            // Check if clicking a source (only if not locked)
+            if (!state.lockSourcePositions) {
+                for (let i = 0; i < state.sources.length; i++) {
+                    const source = state.sources[i];
+                    const dist = distance(x, y, source.x, source.y);
+                    if (dist < 10) {
+                        state.dragging = { x, y };
+                        state.dragType = i;
+                        // Calculate and store radius from ring center if snap to rings is enabled
+                        if (state.snapToRings) {
+                            const dx = source.x - state.ringCenter.x;
+                            const dy = source.y - state.ringCenter.y;
+                            state.dragStartRadius = Math.sqrt(dx * dx + dy * dy);
+                        } else {
+                            state.dragStartRadius = null;
+                        }
+                        canvas.style.cursor = 'grabbing';
+                        return;
+                    }
+                }
+            }
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (state.dragging === null || state.dragType === null) {
+                // Update cursor on hover
+                const world = screenToWorld(e.clientX, e.clientY);
+                const { x, y } = world;
+                
+                let hovering = false;
+                const listenerDist = distance(x, y, state.listener.x, state.listener.y);
+                if (listenerDist < 10) {
+                    canvas.style.cursor = 'grab';
+                    hovering = true;
+                } else {
+                    for (const source of state.sources) {
+                        const dist = distance(x, y, source.x, source.y);
+                        if (dist < 10) {
+                            canvas.style.cursor = 'grab';
+                            hovering = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hovering) {
+                    canvas.style.cursor = 'crosshair';
+                }
+                return;
+            }
+            
+            const world = screenToWorld(e.clientX, e.clientY);
+            let { x, y } = world;
+            
+            x = clamp(x, 0, state.worldSize);
+            y = clamp(y, 0, state.worldSize);
+            
+            if (state.dragType === 'listener') {
+                state.listener.x = x;
+                state.listener.y = y;
+            } else if (typeof state.dragType === 'number') {
+                // Use fixed radius from drag start for snap to rings (only angle changes)
+                const snapped = snapToNearestRing(x, y, true);
+                state.sources[state.dragType].x = snapped.x;
+                state.sources[state.dragType].y = snapped.y;
+                updateSourcesList();
+            }
+            
+            draw();
+        });
+        
+        canvas.addEventListener('mouseup', () => {
+            state.dragging = null;
+            state.dragType = null;
+            state.dragStartRadius = null;
+            canvas.style.cursor = 'crosshair';
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            state.dragging = null;
+            state.dragType = null;
+            state.dragStartRadius = null;
+            canvas.style.cursor = 'crosshair';
+        });
+        
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                // Update tab buttons
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // Update tab panes
+                document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+                const targetPane = document.getElementById(`tab-${tabName}`);
+                if (targetPane) {
+                    targetPane.classList.add('active');
+                }
+                
+                // Update mixer list when mixer tab is opened
+                if (tabName === 'mixer') {
+                    updateMixerList();
+                }
+                
+                // Update canvas size in case tab height changed
+                updateCanvasSize();
+            });
+        });
+        
+        // Panel collapse
+        const panelHeader = document.getElementById('panel-header');
+        if (panelHeader) {
+            panelHeader.addEventListener('click', () => {
+                const panel = document.getElementById('control-panel');
+                const toggle = document.getElementById('collapse-toggle');
+                if (panel && toggle) {
+                    panel.classList.toggle('collapsed');
+                    // For right-side panel: ▶ when collapsed (can expand), ◀ when expanded (can collapse)
+                    toggle.textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+                    // Recalculate canvas size after collapse/expand
+                    setTimeout(() => {
+                        updateCanvasSize();
+                    }, 300); // Wait for transition
+                }
+            });
+        }
+        
+        // UI Event Listeners
+        // HUD controls (always visible)
+        const hudStartBtn = document.getElementById('hudStartBtn');
+        const hudStopBtn = document.getElementById('hudStopBtn');
+        if (hudStartBtn) hudStartBtn.addEventListener('click', startAudio);
+        if (hudStopBtn) hudStopBtn.addEventListener('click', stopAudio);
+        
+        // Tab controls
+        const masterVolTab = document.getElementById('masterVol');
+        if (masterVolTab) {
+            masterVolTab.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                state.masterVolume = value;
+                const valueDisplay = document.getElementById('masterVolValue');
+                if (valueDisplay) valueDisplay.textContent = value.toFixed(1);
+                if (state.masterGain) {
+                    state.masterGain.gain.value = dbToLin(value);
+                }
+            });
+        }
+        
+        const nearestNTab = document.getElementById('nearestN');
+        if (nearestNTab) {
+            nearestNTab.addEventListener('input', (e) => {
+                const value = parseInt(e.target.value);
+                state.nearestN = value;
+                const valueDisplay = document.getElementById('nearestNValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+            });
+        }
+        
+        const globalRmaxTab = document.getElementById('globalRmax');
+        if (globalRmaxTab) {
+            globalRmaxTab.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                state.globalRmax = value;
+                const valueDisplay = document.getElementById('globalRmaxValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+                // Update sources without custom rmax
+                for (const source of state.sources) {
+                    if (source.rmax === state.globalRmax || Math.abs(source.rmax - state.globalRmax) < 1) {
+                        source.rmax = value;
+                    }
+                }
+                updateSourcesList();
+            });
+        }
+        
+        const falloffPowerTab = document.getElementById('falloffPower');
+        if (falloffPowerTab) {
+            falloffPowerTab.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                state.falloffPower = value;
+                const valueDisplay = document.getElementById('falloffPowerValue');
+                if (valueDisplay) valueDisplay.textContent = value.toFixed(1);
+                for (const source of state.sources) {
+                    source.falloffPower = value;
+                }
+            });
+        }
+        
+        const panningEnabled = document.getElementById('panningEnabled');
+        if (panningEnabled) {
+            panningEnabled.addEventListener('change', (e) => {
+                state.panningEnabled = e.target.checked;
+            });
+        }
+        
+        const panDistance = document.getElementById('panDistance');
+        if (panDistance) {
+            panDistance.addEventListener('input', (e) => {
+                state.panDistance = parseFloat(e.target.value);
+                const valueDisplay = document.getElementById('panDistanceValue');
+                if (valueDisplay) valueDisplay.textContent = state.panDistance;
+            });
+        }
+        
+        const showSourceRanges = document.getElementById('showSourceRanges');
+        if (showSourceRanges) {
+            showSourceRanges.addEventListener('change', (e) => {
+                state.showSourceRanges = e.target.checked;
+            });
+        }
+        
+        const snapToRings = document.getElementById('snapToRings');
+        if (snapToRings) {
+            snapToRings.addEventListener('change', (e) => {
+                state.snapToRings = e.target.checked;
+            });
+        }
+        
+        const debugVisuals = document.getElementById('debugVisuals');
+        if (debugVisuals) {
+            debugVisuals.addEventListener('change', (e) => {
+                state.debugVisuals = e.target.checked;
+            });
+        }
+        
+        const showSources = document.getElementById('showSources');
+        if (showSources) {
+            showSources.addEventListener('change', (e) => {
+                state.showSources = e.target.checked;
+            });
+        }
+        
+        const showSourceLabels = document.getElementById('showSourceLabels');
+        if (showSourceLabels) {
+            showSourceLabels.addEventListener('change', (e) => {
+                state.showSourceLabels = e.target.checked;
+            });
+        }
+        
+        const lockSourcePositions = document.getElementById('lockSourcePositions');
+        if (lockSourcePositions) {
+            lockSourcePositions.addEventListener('change', (e) => {
+                state.lockSourcePositions = e.target.checked;
+            });
+        }
+        
+        // Load audio file and save to localStorage
+        async function loadAndSaveAudioFile(file, sourceIndex, sourceId) {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // Convert to base64 for localStorage (chunked to avoid stack overflow)
+                const bytes = new Uint8Array(arrayBuffer);
+                let binary = '';
+                const chunkSize = 8192; // Process in chunks
+                for (let i = 0; i < bytes.length; i += chunkSize) {
+                    const chunk = bytes.subarray(i, i + chunkSize);
+                    binary += String.fromCharCode.apply(null, chunk);
+                }
+                const base64 = btoa(binary);
+                const dataUrl = `data:${file.type};base64,${base64}`;
+                
+                // Save to localStorage
+                try {
+                    localStorage.setItem(`audio_${sourceId}`, dataUrl);
+                    localStorage.setItem(`audio_${sourceId}_type`, file.type);
+                    console.log(`[Load All] Saved ${sourceId} to localStorage`);
+                } catch (err) {
+                    console.warn(`[Load All] Failed to save ${sourceId} to localStorage:`, err);
+                }
+                
+                // Load into audio context
+                if (state.audioCtx) {
+                    const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                    state.sources[sourceIndex].audioBuffer = audioBuffer;
+                    
+                    // If audio is playing, start this source
+                    if (state.isPlaying) {
+                        startSource(state.sources[sourceIndex]);
+                    }
+                }
+                
+                return true;
+            } catch (err) {
+                console.error(`[Load All] ✗ Failed to load ${file.name}:`, err);
+                return false;
+            }
+        }
+        
+        // Load audio from localStorage
+        async function loadAudioFromLocalStorage(sourceIndex, sourceId) {
+            try {
+                const dataUrl = localStorage.getItem(`audio_${sourceId}`);
+                if (!dataUrl) {
+                    return false;
+                }
+                
+                // Ensure audio context exists
+                if (!state.audioCtx) {
+                    try {
+                        initAudio();
+                    } catch (err) {
+                        console.warn(`[Auto-load] Could not init audio context for ${sourceId}:`, err);
+                        return false;
+                    }
+                }
+                
+                if (!state.audioCtx) {
+                    return false;
+                }
+                
+                // Convert data URL to ArrayBuffer
+                const response = await fetch(dataUrl);
+                const arrayBuffer = await response.arrayBuffer();
+                const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                state.sources[sourceIndex].audioBuffer = audioBuffer;
+                
+                console.log(`[Auto-load] ✓ Loaded ${sourceId} from localStorage`);
+                return true;
+            } catch (err) {
+                console.warn(`[Auto-load] Failed to load ${sourceId} from localStorage:`, err);
+                // Remove corrupted data
+                localStorage.removeItem(`audio_${sourceId}`);
+                localStorage.removeItem(`audio_${sourceId}_type`);
+                return false;
+            }
+        }
+        
+        // Load all audio files and match with sources
+        const loadAllAudioFiles = document.getElementById('loadAllAudioFiles');
+        if (loadAllAudioFiles) {
+            loadAllAudioFiles.addEventListener('change', async (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length === 0) return;
+                
+                // Ensure audio context exists
+                if (!state.audioCtx) {
+                    try {
+                        initAudio();
+                    } catch (err) {
+                        console.error('Failed to init audio context:', err);
+                        alert('Failed to initialize audio. Please try clicking Start Audio first.');
+                        return;
+                    }
+                }
+                
+                if (!state.audioCtx) {
+                    alert('Audio context not available. Please click Start Audio first.');
+                    return;
+                }
+                
+                console.log(`[Load All] Processing ${files.length} files...`);
+                let loadedCount = 0;
+                
+                for (const file of files) {
+                    // Extract base name without extension (e.g., "A1" from "A1.mp3")
+                    const baseName = file.name.replace(/\.[^/.]+$/, '');
+                    
+                    // Find matching source by ID
+                    const sourceIndex = state.sources.findIndex(s => s.id === baseName);
+                    
+                    if (sourceIndex !== -1) {
+                        const success = await loadAndSaveAudioFile(file, sourceIndex, baseName);
+                        if (success) {
+                            console.log(`[Load All] ✓ Loaded ${baseName}: ${file.name}`);
+                            loadedCount++;
+                        }
+                    } else {
+                        console.log(`[Load All] No matching source found for ${baseName} (from ${file.name})`);
+                    }
+                }
+                
+                updateSourcesList();
+                console.log(`[Load All] Finished: ${loadedCount}/${files.length} files loaded and saved`);
+                
+                // Clear input so same files can be selected again if needed
+                e.target.value = '';
+            });
+        }
+        
+        // Load audio file and save to localStorage
+        async function loadAndSaveAudioFile(file, sourceIndex, sourceId) {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // Convert to base64 for localStorage (chunked to avoid stack overflow)
+                const bytes = new Uint8Array(arrayBuffer);
+                let binary = '';
+                const chunkSize = 8192; // Process in chunks
+                for (let i = 0; i < bytes.length; i += chunkSize) {
+                    const chunk = bytes.subarray(i, i + chunkSize);
+                    binary += String.fromCharCode.apply(null, chunk);
+                }
+                const base64 = btoa(binary);
+                const dataUrl = `data:${file.type};base64,${base64}`;
+                
+                // Save to localStorage
+                try {
+                    localStorage.setItem(`audio_${sourceId}`, dataUrl);
+                    localStorage.setItem(`audio_${sourceId}_type`, file.type);
+                    console.log(`[Load All] Saved ${sourceId} to localStorage`);
+                } catch (err) {
+                    console.warn(`[Load All] Failed to save ${sourceId} to localStorage:`, err);
+                }
+                
+                // Load into audio context
+                if (state.audioCtx) {
+                    const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                    state.sources[sourceIndex].audioBuffer = audioBuffer;
+                    
+                    // If audio is playing, start this source
+                    if (state.isPlaying) {
+                        startSource(state.sources[sourceIndex]);
+                    }
+                }
+                
+                return true;
+            } catch (err) {
+                console.error(`[Load All] ✗ Failed to load ${file.name}:`, err);
+                return false;
+            }
+        }
+        
+        // Load audio from localStorage
+        async function loadAudioFromLocalStorage(sourceIndex, sourceId) {
+            try {
+                const dataUrl = localStorage.getItem(`audio_${sourceId}`);
+                if (!dataUrl) {
+                    return false;
+                }
+                
+                // Ensure audio context exists
+                if (!state.audioCtx) {
+                    try {
+                        initAudio();
+                    } catch (err) {
+                        console.warn(`[Auto-load] Could not init audio context for ${sourceId}:`, err);
+                        return false;
+                    }
+                }
+                
+                if (!state.audioCtx) {
+                    return false;
+                }
+                
+                // Convert data URL to ArrayBuffer
+                const response = await fetch(dataUrl);
+                const arrayBuffer = await response.arrayBuffer();
+                const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                state.sources[sourceIndex].audioBuffer = audioBuffer;
+                
+                console.log(`[Auto-load] ✓ Loaded ${sourceId} from localStorage`);
+                return true;
+            } catch (err) {
+                console.warn(`[Auto-load] Failed to load ${sourceId} from localStorage:`, err);
+                // Remove corrupted data
+                localStorage.removeItem(`audio_${sourceId}`);
+                localStorage.removeItem(`audio_${sourceId}_type`);
+                return false;
+            }
+        }
+        
+        const debugOverlay = document.getElementById('debugOverlay');
+        if (debugOverlay) {
+            debugOverlay.addEventListener('change', (e) => {
+                state.debugOverlayVisible = e.target.checked;
+                const overlay = document.getElementById('debug-overlay');
+                if (overlay) {
+                    if (state.debugOverlayVisible) {
+                        overlay.classList.add('visible');
+                    } else {
+                        overlay.classList.remove('visible');
+                    }
+                }
+            });
+        }
+        
+        const applyRingsBtn = document.getElementById('applyRingsBtn');
+        if (applyRingsBtn) {
+            applyRingsBtn.addEventListener('click', () => {
+                const input = document.getElementById('ringRadiiInput');
+                if (input) {
+                    const radii = input.value.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 0);
+                    if (radii.length > 0) {
+                        state.ringRadii = radii.sort((a, b) => a - b);
+                    }
+                }
+            });
+        }
+        
+        const addSourceBtn = document.getElementById('addSourceBtn');
+        if (addSourceBtn) {
+            addSourceBtn.addEventListener('click', () => {
+                const newPos = snapToNearestRing(120, 120);
+                // Generate next name: if we have A1-A4, B1-B4, next would be C1, C2, etc.
+                const groupIndex = Math.floor(state.sources.length / 4);
+                const itemIndex = (state.sources.length % 4) + 1;
+                const groupLetter = String.fromCharCode(65 + groupIndex); // A, B, C, ...
+                const newId = `${groupLetter}${itemIndex}`;
+                
+                state.sources.push({
+                    id: newId,
+                    x: newPos.x,
+                    y: newPos.y,
+                    audioBuffer: null,
+                    sourceNode: null,
+                    gainNode: null,
+                    pannerNode: null,
+                    rmax: state.globalRmax,
+                    falloffPower: state.falloffPower,
+                    muted: false,
+                    solo: false,
+                    visualAlpha: 0,
+                });
+                updateSourcesList();
+            });
+        }
+        
+        // Background image controls
+        const reloadBgBtn = document.getElementById('reloadBgBtn');
+        if (reloadBgBtn) {
+            reloadBgBtn.addEventListener('click', () => {
+                if (isFileProtocol) {
+                    // file:// mode: cannot reload by filename
+                    state.bgImage.status = 'ERROR';
+                    state.bgImage.errorMessage = 'file:// mode cannot reload by filename. Please choose the image once via file picker or run a local server.';
+                    updateBgStatus();
+                    
+                    // Highlight file input
+                    const fileInput = document.getElementById('bgImageFile');
+                    if (fileInput) {
+                        fileInput.style.border = '2px solid #04427b';
+                        fileInput.style.animation = 'shake 0.5s';
+                        setTimeout(() => {
+                            fileInput.style.border = '';
+                            fileInput.style.animation = '';
+                        }, 500);
+                    }
+                    return;
+                }
+                
+                // http:// mode: normal reload
+                const urlInput = document.getElementById('bgImageUrl');
+                if (urlInput) {
+                    const url = urlInput.value.trim();
+                    const srcToLoad = url || DEFAULT_BG_SRC;
+                    if (url !== srcToLoad) {
+                        urlInput.value = srcToLoad;
+                    }
+                    loadBgImage(srcToLoad, true);
+                }
+            });
+        }
+        
+        const bgImageUrl = document.getElementById('bgImageUrl');
+        if (bgImageUrl) {
+            bgImageUrl.addEventListener('change', (e) => {
+                if (isFileProtocol) {
+                    // In file:// mode, URL input is read-only (for display)
+                    // User must use file picker
+                    return;
+                }
+                const url = e.target.value.trim();
+                if (url) {
+                    loadBgImage(url, false);
+                }
+            });
+        }
+        
+        const bgImageFile = document.getElementById('bgImageFile');
+        if (bgImageFile) {
+            bgImageFile.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                if (!file.type.startsWith('image/')) {
+                    alert('Please select an image file');
+                    e.target.value = '';
+                    return;
+                }
+                
+                state.bgImage.src = file.name;
+                state.bgImage.status = 'LOADING';
+                updateBgStatus();
+                
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const dataUrl = event.target.result;
+                    const img = state.bgImage.image;
+                    if (!img) {
+                        console.error('Background image object not initialized');
+                        return;
+                    }
+                    
+                    // Save to localStorage for file:// persistence
+                    try {
+                        localStorage.setItem('bgDataUrl', dataUrl);
+                        localStorage.setItem('bgFileName', file.name);
+                    } catch (err) {
+                        console.warn('Failed to save to localStorage:', err);
+                    }
+                    
+                    img.src = dataUrl;
+                };
+                reader.onerror = () => {
+                    state.bgImage.status = 'ERROR';
+                    state.bgImage.errorMessage = `Failed to read file: ${file.name}`;
+                    updateBgStatus();
+                    console.error('File read error:', file.name);
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+        
+        // Window resize handler
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                updateCanvasSize();
+            }, 100);
+        });
+        
+        
+        // Initialize - correct order
+        // 1. Initialize the ONE canonical background image object
+        initBgImage();
+        
+        // 2. Update canvas size BEFORE first draw (ensures valid scale)
+        updateCanvasSize();
+        
+        // 3. Initialize default sources
+        initDefaultSources();
+        
+        // 3a. Auto-load audio files from localStorage (if previously saved)
+        async function loadAllAudioFromStorage() {
+            console.log('[Auto-load] Checking localStorage for saved audio files...');
+            let loadedCount = 0;
+            
+            // Wait a bit for audio context to be ready
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            for (let i = 0; i < state.sources.length; i++) {
+                const source = state.sources[i];
+                if (!source.audioBuffer) {
+                    const loaded = await loadAudioFromLocalStorage(i, source.id);
+                    if (loaded) {
+                        loadedCount++;
+                    }
+                    // Small delay between loads
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                }
+            }
+            
+            if (loadedCount > 0) {
+                console.log(`[Auto-load] Loaded ${loadedCount} audio files from localStorage`);
+                updateSourcesList();
+            } else {
+                console.log('[Auto-load] No saved audio files found in localStorage');
+            }
+        }
+        
+        // Start loading from localStorage immediately
+        // Disabled: User loads audio files manually
+        // loadAllAudioFromStorage();
+        
+        // 3b. Auto-load audio files matching source names (http:// only)
+        autoLoadAllSourceAudio();
+        
+        // 4. Initialize debug display
+        const debugSrc = document.getElementById('bgDebugSrc');
+        if (debugSrc) {
+            debugSrc.textContent = DEFAULT_BG_SRC;
+        }
+        updateBgStatus(); // Set initial status display
+        
+        // 5. Load background image based on protocol
+        if (isFileProtocol) {
+            // file:// mode: try localStorage first
+            try {
+                const storedDataUrl = localStorage.getItem('bgDataUrl');
+                const storedFileName = localStorage.getItem('bgFileName') || '(local)';
+                
+                if (storedDataUrl) {
+                    const img = state.bgImage.image;
+                    if (img) {
+                        state.bgImage.src = storedFileName;
+                        state.bgImage.status = 'LOADING';
+                        const urlInput = document.getElementById('bgImageUrl');
+                        if (urlInput) {
+                            urlInput.value = storedFileName;
+                        }
+                        updateBgStatus();
+                        // Set src - onload handler will update status and trigger draw
+                        img.src = storedDataUrl;
+                        // If image is already cached/loaded (data URL loads instantly), onload might not fire
+                        // Check after a microtask
+                        setTimeout(() => {
+                            if (img.complete && img.naturalWidth > 0 && state.bgImage.status === 'LOADING') {
+                                // Image already loaded, trigger onload manually
+                                img.onload();
+                            }
+                        }, 0);
+                    }
+                } else {
+                    // No stored image, show warning
+                    state.bgImage.status = 'ERROR';
+                    state.bgImage.errorMessage = 'No background loaded. Please select an image file.';
+                    updateBgStatus();
+                }
+            } catch (err) {
+                console.warn('Failed to load from localStorage:', err);
+                state.bgImage.status = 'ERROR';
+                state.bgImage.errorMessage = 'Failed to load stored background. Please select an image file.';
+                updateBgStatus();
+            }
+        } else {
+            // http:// mode: load default background
+            loadBgImage(DEFAULT_BG_SRC, false);
+        }
+        
+        // 6. Start render loop (independent of audio, always runs)
+        renderLoop();
+        
+        // 7. Update audio status
+        updateAudioStatus();
+        
+        // 8. If panel width was invalid, schedule a second updateCanvasSize
+        const panel = document.getElementById('control-panel');
+        if (panel && panel.offsetWidth <= 0) {
+            requestAnimationFrame(() => {
+                updateCanvasSize();
+            });
+        }
+    </script>
+</body>
+</html>
