@@ -1157,13 +1157,19 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             state.masterGain.gain.value = dbToLin(state.masterVolume);
         }
         
-        function startAudio() {
+        async function startAudio() {
             if (!state.audioCtx) {
                 initAudio();
             }
             
+            // Resume audio context if suspended (awaited for autoplay policy)
             if (state.audioCtx.state === 'suspended') {
-                state.audioCtx.resume();
+                try {
+                    await state.audioCtx.resume();
+                } catch (err) {
+                    console.warn('Failed to resume audio context:', err);
+                    // Continue anyway - might work on user interaction
+                }
             }
             
             // Start all sources with audio buffers
@@ -1629,7 +1635,12 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 // Auto-start audio at 1 second into fade in
                 if (elapsed >= 1 && !loading.audioAutoStarted && !state.isPlaying) {
                     loading.audioAutoStarted = true;
-                    startAudio();
+                    // Call startAudio asynchronously - it's now async
+                    startAudio().catch(err => {
+                        console.warn('Failed to auto-start audio:', err);
+                        // Reset flag so it can be tried again if needed
+                        loading.audioAutoStarted = false;
+                    });
                 }
                 
                 if (elapsed < 4) {
