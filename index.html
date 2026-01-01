@@ -684,16 +684,6 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             visualPower: 1.8, // Visual falloff power for alpha
             visualTau: 0.18, // Visual alpha smoothing time constant (seconds)
             lastFrameTime: performance.now(),
-            loadingState: {
-                isLoading: true,
-                loadedSources: 0,
-                totalSources: 21,
-                showWaitText: true,
-                showListenText: false,
-                listenTextAlpha: 0,
-                listenTextStartTime: null,
-                audioAutoStarted: false, // Track if audio has been auto-started
-            },
         };
         
         // Canvas setup
@@ -1042,12 +1032,6 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             // Only try in http:// protocol
             if (isFileProtocol) {
                 console.log('[Auto-load] file:// protocol detected. Use "Load Audio Files" in Sources tab to load audio files.');
-                // Still complete the loading animation even if no files to load
-                // Mark all sources as processed (they're already initialized)
-                state.loadingState.loadedSources = state.sources.length;
-                state.loadingState.showWaitText = false;
-                state.loadingState.showListenText = true;
-                state.loadingState.listenTextStartTime = performance.now();
                 return;
             }
             
@@ -1066,7 +1050,6 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             }
             
             let loadedCount = 0;
-            
             for (let i = 0; i < state.sources.length; i++) {
                 const source = state.sources[i];
                 // Only load if not already loaded
@@ -1075,23 +1058,10 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     if (state.sources[i].audioBuffer) {
                         loadedCount++;
                     }
-                } else {
-                    // Already loaded, count it
-                    loadedCount++;
+                    // Small delay between requests to avoid overwhelming
+                    await new Promise(resolve => setTimeout(resolve, 50));
                 }
-                
-                // Update loading state - increment for each source processed (whether loaded or not)
-                // Each source corresponds to one character in the wait text
-                state.loadingState.loadedSources = i + 1;
-                
-                // Small delay between requests to avoid overwhelming
-                await new Promise(resolve => setTimeout(resolve, 50));
             }
-            
-            // All sources processed - hide wait text and show listen text
-            state.loadingState.showWaitText = false;
-            state.loadingState.showListenText = true;
-            state.loadingState.listenTextStartTime = performance.now();
             
             if (loadedCount > 0) {
                 console.log(`[Auto-load] Successfully loaded ${loadedCount} audio files`);
@@ -1157,19 +1127,13 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             state.masterGain.gain.value = dbToLin(state.masterVolume);
         }
         
-        async function startAudio() {
+        function startAudio() {
             if (!state.audioCtx) {
                 initAudio();
             }
             
-            // Resume audio context if suspended (awaited for autoplay policy)
             if (state.audioCtx.state === 'suspended') {
-                try {
-                    await state.audioCtx.resume();
-                } catch (err) {
-                    console.warn('Failed to resume audio context:', err);
-                    // Continue anyway - might work on user interaction
-                }
+                state.audioCtx.resume();
             }
             
             // Start all sources with audio buffers
@@ -1520,38 +1484,8 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             ctx.lineWidth = 2;
             ctx.stroke();
             
-            // Reset transform for overlay
+            // Reset transform
             ctx.setTransform(1, 0, 0, 1, 0, 0);
-            
-            // Draw loading overlay
-            const loading = state.loadingState;
-            if (loading.isLoading || loading.showWaitText || loading.showListenText) {
-                const centerX = pixelSize / 2;
-                const centerY = pixelSize / 2;
-                
-                // Draw ".......wait......." text (21 characters) - characters appear as sources load
-                if (loading.showWaitText) {
-                    const waitText = '.......wait.......';
-                    const charsToShow = Math.min(loading.loadedSources, waitText.length);
-                    const visibleText = waitText.substring(0, charsToShow);
-                    
-                    ctx.fillStyle = 'rgba(144, 238, 144, 0.8)'; // Light green, semi-transparent
-                    ctx.font = 'bold 20px monospace';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(visibleText, centerX, centerY);
-                }
-                
-                // Draw "listen..." text with fade in/out
-                if (loading.showListenText) {
-                    const listenText = 'listen...';
-                    ctx.fillStyle = `rgba(144, 238, 144, ${loading.listenTextAlpha})`;
-                    ctx.font = 'bold 20px monospace';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(listenText, centerX, centerY);
-                }
-            }
         }
         
         // Render loop (independent of audio, always runs)
@@ -1623,49 +1557,9 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             }
         }
         
-        // Update loading animation state
-        function updateLoadingState() {
-            const loading = state.loadingState;
-            
-            // Update "listen..." text alpha for fade in/out
-            if (loading.showListenText && loading.listenTextStartTime !== null) {
-                const currentTime = performance.now();
-                const elapsed = (currentTime - loading.listenTextStartTime) / 1000; // Convert to seconds
-                
-                // Auto-start audio at 1 second into fade in
-                if (elapsed >= 1 && !loading.audioAutoStarted && !state.isPlaying) {
-                    loading.audioAutoStarted = true;
-                    // Call startAudio asynchronously - it's now async
-                    startAudio().catch(err => {
-                        console.warn('Failed to auto-start audio:', err);
-                        // Reset flag so it can be tried again if needed
-                        loading.audioAutoStarted = false;
-                    });
-                }
-                
-                if (elapsed < 4) {
-                    // Fade in (0-4 seconds)
-                    loading.listenTextAlpha = elapsed / 4;
-                } else if (elapsed < 9) {
-                    // Stay visible (4-9 seconds)
-                    loading.listenTextAlpha = 1.0;
-                } else if (elapsed < 13) {
-                    // Fade out (9-13 seconds)
-                    loading.listenTextAlpha = 1.0 - ((elapsed - 9) / 4);
-                } else {
-                    // Hide after fade out
-                    loading.showListenText = false;
-                    loading.isLoading = false;
-                }
-            }
-        }
-        
         function renderLoop() {
             // Update visual alpha (always, for smooth fading)
             updateVisualAlpha();
-            
-            // Update loading animation
-            updateLoadingState();
             
             // Update master volume meter
             updateMasterVolumeMeter();
