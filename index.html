@@ -692,6 +692,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 showListenText: false,
                 listenTextAlpha: 0,
                 listenTextStartTime: null,
+                audioAutoStarted: false, // Track if audio has been auto-started
             },
         };
         
@@ -1624,6 +1625,12 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             if (loading.showListenText && loading.listenTextStartTime !== null) {
                 const currentTime = performance.now();
                 const elapsed = (currentTime - loading.listenTextStartTime) / 1000; // Convert to seconds
+                
+                // Auto-start audio at 1 second into fade in
+                if (elapsed >= 1 && !loading.audioAutoStarted && !state.isPlaying) {
+                    loading.audioAutoStarted = true;
+                    startAudio();
+                }
                 
                 if (elapsed < 4) {
                     // Fade in (0-4 seconds)
