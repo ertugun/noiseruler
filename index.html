@@ -494,21 +494,40 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             </div>
             
             <div id="tab-view" class="tab-pane">
-                <div class="control-group toggle">
-                    <input type="checkbox" id="showSources" checked>
-                    <label for="showSources">Show Sources</label>
+                <div class="control-group">
+                    <label style="margin-bottom: 8px; display: block; font-weight: bold;">Presets:</label>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="radio" name="presetMode" value="listener" id="presetListener" checked style="margin-right: 8px;">
+                            <span>Listener</span>
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="radio" name="presetMode" value="designer" id="presetDesigner" style="margin-right: 8px;">
+                            <span>Designer</span>
+                        </label>
+                    </div>
                 </div>
-                <div class="control-group toggle">
-                    <input type="checkbox" id="showSourceLabels">
-                    <label for="showSourceLabels">Show Source Labels</label>
-                </div>
-                <div class="control-group toggle">
-                    <input type="checkbox" id="showSourceRanges" checked>
-                    <label for="showSourceRanges">Show Source Range Circles</label>
-                </div>
-                <div class="control-group toggle">
-                    <input type="checkbox" id="lockSourcePositions" checked>
-                    <label for="lockSourcePositions">Lock Source Positions</label>
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                    <div class="control-group toggle">
+                        <input type="checkbox" id="showSources">
+                        <label for="showSources">Show Sources</label>
+                    </div>
+                    <div class="control-group toggle">
+                        <input type="checkbox" id="showSourceLabels">
+                        <label for="showSourceLabels">Show Source Labels</label>
+                    </div>
+                    <div class="control-group toggle">
+                        <input type="checkbox" id="showSourceRanges">
+                        <label for="showSourceRanges">Show Source Range Circles</label>
+                    </div>
+                    <div class="control-group toggle">
+                        <input type="checkbox" id="lockSourcePositions" checked>
+                        <label for="lockSourcePositions">Lock Source Positions</label>
+                    </div>
+                    <div class="control-group toggle">
+                        <input type="checkbox" id="snapToRings" checked>
+                        <label for="snapToRings">Snap to Rings</label>
+                    </div>
                 </div>
             </div>
             
@@ -517,10 +536,6 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     <label>Ring Radii (comma-separated):</label>
                     <input type="text" id="ringRadiiInput" value="40,70,100,130,160,190,220">
                     <button id="applyRingsBtn" style="margin-top: 5px; width: 100%;">Apply Rings</button>
-                </div>
-                <div class="control-group toggle">
-                    <input type="checkbox" id="snapToRings">
-                    <label for="snapToRings">Snap to Rings</label>
                 </div>
             </div>
             
@@ -584,6 +599,43 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
         }
         
+        // Get heatmap color from gradient (t: 0 = newest/yellow, 1 = oldest/purple)
+        function getHeatmapColor(t) {
+            t = clamp(t, 0, 1);
+            
+            // Color stops for gradient: yellow -> lime green -> turquoise -> blue -> indigo -> purple
+            const colors = [
+                { r: 255, g: 255, b: 0 },      // 0.0: Bright yellow (newest)
+                { r: 204, g: 255, b: 0 },      // 0.2: Lime green
+                { r: 0, g: 255, b: 200 },      // 0.4: Turquoise
+                { r: 0, g: 191, b: 255 },      // 0.6: Sky blue
+                { r: 75, g: 0, b: 200 },       // 0.8: Indigo
+                { r: 128, g: 0, b: 128 }       // 1.0: Purple (oldest)
+            ];
+            
+            const stops = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+            
+            // Find the two colors to interpolate between
+            let i = 0;
+            for (let j = 0; j < stops.length - 1; j++) {
+                if (t >= stops[j] && t <= stops[j + 1]) {
+                    i = j;
+                    break;
+                }
+            }
+            
+            // Interpolate between colors[i] and colors[i+1]
+            const tLocal = (t - stops[i]) / (stops[i + 1] - stops[i]);
+            const c1 = colors[i];
+            const c2 = colors[i + 1];
+            
+            return {
+                r: Math.round(c1.r + (c2.r - c1.r) * tLocal),
+                g: Math.round(c1.g + (c2.g - c1.g) * tLocal),
+                b: Math.round(c1.b + (c2.b - c1.b) * tLocal)
+            };
+        }
+        
         // Default background image source (canonical)
         const DEFAULT_BG_SRC = 'ses_cetveli_v3.jpg';
         
@@ -599,13 +651,14 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             sources: [],
             ringRadii: [40, 70, 100, 130, 160, 190, 220],
             ringCenter: { x: 240, y: 240 },
-            snapToRings: false, // Default OFF
+            snapToRings: true, // Default: ON (Listener Mode preset)
             debugVisuals: false, // Default: hidden
             debugOverlayVisible: false, // Default: hidden
-            showSources: true, // Default: show sources
+            showSources: false, // Default: OFF (Listener Mode preset)
             showSourceLabels: false, // Default: hide labels
-            showSourceRanges: true, // Default: show range circles
+            showSourceRanges: false, // Default: OFF (Listener Mode preset)
             lockSourcePositions: true, // Default: locked
+            currentPreset: 'listener', // Current preset mode
             panningEnabled: true,
             panDistance: 120,
             nearestN: 4,
@@ -631,6 +684,15 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             visualPower: 1.8, // Visual falloff power for alpha
             visualTau: 0.18, // Visual alpha smoothing time constant (seconds)
             lastFrameTime: performance.now(),
+            loadingState: {
+                isLoading: true,
+                loadedSources: 0,
+                totalSources: 21,
+                showWaitText: true,
+                showListenText: false,
+                listenTextAlpha: 0,
+                listenTextStartTime: null,
+            },
         };
         
         // Canvas setup
@@ -979,6 +1041,12 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             // Only try in http:// protocol
             if (isFileProtocol) {
                 console.log('[Auto-load] file:// protocol detected. Use "Load Audio Files" in Sources tab to load audio files.');
+                // Still complete the loading animation even if no files to load
+                // Mark all sources as processed (they're already initialized)
+                state.loadingState.loadedSources = state.sources.length;
+                state.loadingState.showWaitText = false;
+                state.loadingState.showListenText = true;
+                state.loadingState.listenTextStartTime = performance.now();
                 return;
             }
             
@@ -997,6 +1065,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             }
             
             let loadedCount = 0;
+            
             for (let i = 0; i < state.sources.length; i++) {
                 const source = state.sources[i];
                 // Only load if not already loaded
@@ -1005,10 +1074,23 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     if (state.sources[i].audioBuffer) {
                         loadedCount++;
                     }
-                    // Small delay between requests to avoid overwhelming
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                } else {
+                    // Already loaded, count it
+                    loadedCount++;
                 }
+                
+                // Update loading state - increment for each source processed (whether loaded or not)
+                // Each source corresponds to one character in the wait text
+                state.loadingState.loadedSources = i + 1;
+                
+                // Small delay between requests to avoid overwhelming
+                await new Promise(resolve => setTimeout(resolve, 50));
             }
+            
+            // All sources processed - hide wait text and show listen text
+            state.loadingState.showWaitText = false;
+            state.loadingState.showListenText = true;
+            state.loadingState.listenTextStartTime = performance.now();
             
             if (loadedCount > 0) {
                 console.log(`[Auto-load] Successfully loaded ${loadedCount} audio files`);
@@ -1422,7 +1504,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 }
             }
             
-            // Draw listener in world space
+            // Draw listener in world space (current position, always on top)
             ctx.fillStyle = '#00ff00';
             ctx.beginPath();
             ctx.arc(state.listener.x, state.listener.y, 6, 0, Math.PI * 2);
@@ -1431,8 +1513,38 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             ctx.lineWidth = 2;
             ctx.stroke();
             
-            // Reset transform
+            // Reset transform for overlay
             ctx.setTransform(1, 0, 0, 1, 0, 0);
+            
+            // Draw loading overlay
+            const loading = state.loadingState;
+            if (loading.isLoading || loading.showWaitText || loading.showListenText) {
+                const centerX = pixelSize / 2;
+                const centerY = pixelSize / 2;
+                
+                // Draw ".......wait......." text (21 characters) - characters appear as sources load
+                if (loading.showWaitText) {
+                    const waitText = '.......wait.......';
+                    const charsToShow = Math.min(loading.loadedSources, waitText.length);
+                    const visibleText = waitText.substring(0, charsToShow);
+                    
+                    ctx.fillStyle = 'rgba(144, 238, 144, 0.8)'; // Light green, semi-transparent
+                    ctx.font = 'bold 20px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(visibleText, centerX, centerY);
+                }
+                
+                // Draw "listen..." text with fade in/out
+                if (loading.showListenText) {
+                    const listenText = 'listen...';
+                    ctx.fillStyle = `rgba(144, 238, 144, ${loading.listenTextAlpha})`;
+                    ctx.font = 'bold 20px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(listenText, centerX, centerY);
+                }
+            }
         }
         
         // Render loop (independent of audio, always runs)
@@ -1504,9 +1616,38 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             }
         }
         
+        // Update loading animation state
+        function updateLoadingState() {
+            const loading = state.loadingState;
+            
+            // Update "listen..." text alpha for fade in/out
+            if (loading.showListenText && loading.listenTextStartTime !== null) {
+                const currentTime = performance.now();
+                const elapsed = (currentTime - loading.listenTextStartTime) / 1000; // Convert to seconds
+                
+                if (elapsed < 4) {
+                    // Fade in (0-4 seconds)
+                    loading.listenTextAlpha = elapsed / 4;
+                } else if (elapsed < 9) {
+                    // Stay visible (4-9 seconds)
+                    loading.listenTextAlpha = 1.0;
+                } else if (elapsed < 13) {
+                    // Fade out (9-13 seconds)
+                    loading.listenTextAlpha = 1.0 - ((elapsed - 9) / 4);
+                } else {
+                    // Hide after fade out
+                    loading.showListenText = false;
+                    loading.isLoading = false;
+                }
+            }
+        }
+        
         function renderLoop() {
             // Update visual alpha (always, for smooth fading)
             updateVisualAlpha();
+            
+            // Update loading animation
+            updateLoadingState();
             
             // Update master volume meter
             updateMasterVolumeMeter();
@@ -2022,6 +2163,61 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 state.lockSourcePositions = e.target.checked;
             });
         }
+        
+        // Preset system
+        function applyPreset(presetName) {
+            if (presetName === 'designer') {
+                // Designer Mode preset
+                state.showSources = true;
+                state.showSourceRanges = true;
+                state.lockSourcePositions = true;
+                state.snapToRings = true;
+                state.showSourceLabels = false;
+                state.currentPreset = 'designer';
+            } else if (presetName === 'listener') {
+                // Listener Mode preset
+                state.showSources = false;
+                state.showSourceRanges = false;
+                state.lockSourcePositions = true;
+                state.snapToRings = true;
+                state.showSourceLabels = false;
+                state.currentPreset = 'listener';
+            }
+            
+            // Update UI checkboxes
+            if (showSources) showSources.checked = state.showSources;
+            if (showSourceRanges) showSourceRanges.checked = state.showSourceRanges;
+            if (lockSourcePositions) lockSourcePositions.checked = state.lockSourcePositions;
+            if (snapToRings) snapToRings.checked = state.snapToRings;
+            if (showSourceLabels) showSourceLabels.checked = state.showSourceLabels;
+            
+            // Update preset radio buttons
+            const presetListener = document.getElementById('presetListener');
+            const presetDesigner = document.getElementById('presetDesigner');
+            if (presetListener) presetListener.checked = (presetName === 'listener');
+            if (presetDesigner) presetDesigner.checked = (presetName === 'designer');
+        }
+        
+        // Preset radio buttons
+        const presetListener = document.getElementById('presetListener');
+        const presetDesigner = document.getElementById('presetDesigner');
+        if (presetListener) {
+            presetListener.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    applyPreset('listener');
+                }
+            });
+        }
+        if (presetDesigner) {
+            presetDesigner.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    applyPreset('designer');
+                }
+            });
+        }
+        
+        // Initialize with Listener Mode preset (default)
+        applyPreset('listener');
         
         // Load audio file and save to localStorage
         async function loadAndSaveAudioFile(file, sourceIndex, sourceId) {
