@@ -438,10 +438,6 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
         <div id="tab-content">
             <div id="tab-audio" class="tab-pane active">
                 <div class="control-group">
-                    <label>Master Volume: <span id="masterVolValue">0</span> dB</label>
-                    <input type="range" id="masterVol" min="-60" max="0" value="0" step="0.1">
-                </div>
-                <div class="control-group">
                     <label>Nearest N Sources: <span id="nearestNValue">4</span></label>
                     <input type="range" id="nearestN" min="1" max="8" value="4" step="1">
                 </div>
@@ -703,7 +699,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             nearestN: 4,
             globalRmax: 80,
             falloffPower: 2.2,
-            masterVolume: 0,
+            masterVolume: -60, // Start at -60 dB, fade to 0 dB on start
             compressorEnabled: true, // Compressor on/off state
             isPlaying: false,
             autoStartAttempted: false, // Track if auto-start has been attempted
@@ -725,6 +721,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             visualPower: 1.8, // Visual falloff power for alpha
             visualTau: 0.18, // Visual alpha smoothing time constant (seconds)
             lastFrameTime: performance.now(),
+            lastTXMuteUpdate: performance.now() / 1000, // Last update time for T/X mute multiplier
             loadingProgress: {
                 isLoading: false,
                 progress: 0, // 0 to 1
@@ -964,9 +961,9 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 });
             }
             
-            // B group: B1 (180, 159) to B6 (90, 36) - 6 sources, 5 intervals
+            // B group: B1 (180, 159) to B6 (75, 18) - 6 sources, 5 intervals
             const b1 = { x: 180, y: 159 };
-            const b6 = { x: 90, y: 36 };
+            const b6 = { x: 75, y: 18 };
             const bPositions = [];
             for (let i = 0; i < 6; i++) {
                 bPositions.push({
@@ -1006,6 +1003,8 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             // Special rmax values for specific sources
             const specialRmax = {
                 'B1': 40,
+                'B5': 45,
+                'B6': 80,
                 'C2': 110,
                 'C3': 90,
                 'D2': 110,
@@ -1025,6 +1024,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     pannerNode: null,
                     rmax: specialRmax[sourceId] || state.globalRmax,
                     falloffPower: state.falloffPower,
+                    gainSmoothness: 0.05, // Gain fade smoothness (time constant in seconds)
                     muted: false,
                     solo: false,
                     visualAlpha: 0, // Current visual alpha (smoothed)
@@ -1032,6 +1032,533 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             }
             updateSourcesList();
             updateMixerList();
+            
+            // Initialize T1 - moving source
+            initT1Source();
+            
+            // Initialize X1 - moving source on routes
+            initX1Source();
+        }
+        
+        // Initialize T1 moving source
+        function initT1Source() {
+            // Find T1 source or create it
+            let t1Source = state.sources.find(s => s.id === 'T1');
+            if (!t1Source) {
+                t1Source = {
+                    id: 'T1',
+                    x: state.ringCenter.x,
+                    y: state.ringCenter.y,
+                    audioBuffer: null,
+                    sourceNode: null,
+                    gainNode: null,
+                    pannerNode: null,
+                    rmax: state.globalRmax,
+                    falloffPower: state.falloffPower,
+                    gainSmoothness: 1.00, // Gain fade smoothness (time constant in seconds)
+                    muted: false,
+                    solo: false,
+                    visualAlpha: 0,
+                    // Movement properties
+                    isMoving: false,
+                    currentRingRadius: null,
+                    startAngle: null,
+                    endAngle: null,
+                    movementDuration: null,
+                    movementStartTime: null,
+                    movementDirection: null, // 1 for clockwise, -1 for counterclockwise
+                };
+                state.sources.push(t1Source);
+                updateSourcesList();
+                updateMixerList();
+            }
+            
+            // Start T1 movement
+            startT1Movement(t1Source);
+        }
+        
+        // Load random audio file for T1 or X1
+        async function loadRandomAudioForSource(source, sourcePrefix) {
+            if (!state.audioCtx) {
+                try {
+                    initAudio();
+                } catch (err) {
+                    console.warn(`[Random Audio] Failed to init audio context for ${sourcePrefix}:`, err);
+                    return null;
+                }
+            }
+            
+            if (!state.audioCtx) {
+                console.warn(`[Random Audio] Audio context not available for ${sourcePrefix}`);
+                return null;
+            }
+            
+            // Determine file prefix: T1 -> T, X1 -> X
+            const filePrefix = sourcePrefix.charAt(0); // 'T' or 'X'
+            
+            // Fixed number of files to check (to avoid 404 errors)
+            // T1: T1-T4, X1: X1-X5
+            const maxFiles = (filePrefix === 'T') ? 4 : 5;
+            
+            // Try to find available audio files (T1.mp3, T2.mp3, T3.mp3, etc. or X1.mp3, X2.mp3, X3.mp3, etc.)
+            const extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.webm'];
+            
+            // First, find all available files
+            const availableFiles = [];
+            for (let i = 1; i <= maxFiles; i++) {
+                for (const ext of extensions) {
+                    const filename = `${filePrefix}${i}${ext}`; // T1.mp3, T2.mp3, etc. or X1.mp3, X2.mp3, etc.
+                    
+                    try {
+                        // Use HEAD request first to check if file exists (lighter than GET)
+                        const response = await fetch(filename, { method: 'HEAD' });
+                        if (response.ok) {
+                            availableFiles.push(filename);
+                            break; // Found one, move to next number
+                        }
+                    } catch (e) {
+                        // Not found, continue silently (don't log 404 errors)
+                    }
+                }
+            }
+            
+            if (availableFiles.length === 0) {
+                console.log(`[Random Audio] No audio files found for ${sourcePrefix} (searched ${filePrefix}1-${filePrefix}${maxFiles})`);
+                return null;
+            }
+            
+            // Select random file
+            const selectedFile = availableFiles[Math.floor(Math.random() * availableFiles.length)];
+            
+            try {
+                const response = await fetch(selectedFile);
+                if (response.ok) {
+                    const arrayBuffer = await response.arrayBuffer();
+                    const audioBuffer = await state.audioCtx.decodeAudioData(arrayBuffer);
+                    console.log(`[Random Audio] ✓ Loaded ${sourcePrefix}: ${selectedFile}`);
+                    return audioBuffer;
+                }
+            } catch (err) {
+                console.warn(`[Random Audio] Failed to load ${selectedFile}:`, err);
+                return null;
+            }
+            
+            return null;
+        }
+        
+        // Start T1 movement on a random ring
+        function startT1Movement(t1Source) {
+            // Select random ring from 130, 160, 190
+            const availableRings = [130, 160, 190];
+            const selectedRing = availableRings[Math.floor(Math.random() * availableRings.length)];
+            
+            // Find a valid starting angle (not in restricted bottom-right quadrant)
+            let startAngle;
+            let attempts = 0;
+            const centerX = state.worldSize / 2;
+            const centerY = state.worldSize / 2;
+            do {
+                startAngle = Math.random() * Math.PI * 2;
+                const testX = state.ringCenter.x + Math.cos(startAngle) * selectedRing;
+                const testY = state.ringCenter.y + Math.sin(startAngle) * selectedRing;
+                if (!isInRestrictedArea(testX, testY) && 
+                    !isTooCloseToB6(testX, testY) && 
+                    !isOutsideMaxRing(testX, testY)) {
+                    break;
+                }
+                attempts++;
+            } while (attempts < 50); // Safety limit
+            
+            // Movement direction (clockwise or counterclockwise)
+            let direction = Math.random() < 0.5 ? 1 : -1;
+            
+            // End angle: move approximately 180 degrees (half circle) in the chosen direction
+            let endAngle = startAngle + direction * Math.PI;
+            
+            // Ensure end position is also not in restricted area, too close to B6, or outside max ring
+            let endX = state.ringCenter.x + Math.cos(endAngle) * selectedRing;
+            let endY = state.ringCenter.y + Math.sin(endAngle) * selectedRing;
+            if (isInRestrictedArea(endX, endY) || isTooCloseToB6(endX, endY) || isOutsideMaxRing(endX, endY)) {
+                // Reverse direction if end would be invalid
+                direction = -direction;
+                endAngle = startAngle + direction * Math.PI;
+                endX = state.ringCenter.x + Math.cos(endAngle) * selectedRing;
+                endY = state.ringCenter.y + Math.sin(endAngle) * selectedRing;
+                // If still invalid, try different angle
+                if (isInRestrictedArea(endX, endY) || isTooCloseToB6(endX, endY) || isOutsideMaxRing(endX, endY)) {
+                    // Use a smaller movement range
+                    endAngle = startAngle + direction * Math.PI * 0.8; // 80% of half circle instead of 100%
+                }
+            }
+            
+            // Random movement duration between 10-15 seconds (faster appearance, 2x more frequent)
+            const duration = 10 + Math.random() * 5; // 10 to 15 seconds
+            
+            // Set movement properties
+            t1Source.isMoving = true;
+            t1Source.currentRingRadius = selectedRing;
+            t1Source.startAngle = startAngle;
+            t1Source.endAngle = endAngle;
+            t1Source.movementDuration = duration;
+            t1Source.movementStartTime = performance.now() / 1000; // Convert to seconds
+            t1Source.movementDirection = direction;
+            
+            // Set initial position
+            t1Source.x = state.ringCenter.x + Math.cos(startAngle) * selectedRing;
+            t1Source.y = state.ringCenter.y + Math.sin(startAngle) * selectedRing;
+            
+            // Load random audio file and start from random position (async, fire and forget)
+            loadAndStartRandomAudio(t1Source, 'T1');
+        }
+        
+        // Load and start random audio for T1 or X1
+        async function loadAndStartRandomAudio(source, sourcePrefix) {
+            if (!state.audioCtx || !state.isPlaying) return;
+            
+            const randomAudioBuffer = await loadRandomAudioForSource(source, sourcePrefix);
+            if (randomAudioBuffer) {
+                // Stop current audio if playing
+                if (source.sourceNode) {
+                    try {
+                        source.sourceNode.stop();
+                    } catch (e) {
+                        // Already stopped
+                    }
+                    source.sourceNode = null;
+                }
+                
+                // Create new source node
+                const sourceNode = state.audioCtx.createBufferSource();
+                sourceNode.buffer = randomAudioBuffer;
+                sourceNode.loop = true;
+                
+                const gainNode = state.audioCtx.createGain();
+                const pannerNode = state.audioCtx.createStereoPanner();
+                
+                sourceNode.connect(gainNode);
+                gainNode.connect(pannerNode);
+                pannerNode.connect(state.masterGain);
+                
+                source.audioBuffer = randomAudioBuffer;
+                source.sourceNode = sourceNode;
+                source.gainNode = gainNode;
+                source.pannerNode = pannerNode;
+                
+                gainNode.gain.value = 0;
+                pannerNode.pan.value = 0;
+                
+                // Start from random position (0 to duration - 1 second, minimum 0)
+                const duration = randomAudioBuffer.duration;
+                const maxOffset = Math.max(0, duration - 1);
+                const randomOffset = Math.random() * maxOffset;
+                
+                sourceNode.start(0, randomOffset);
+            }
+        }
+        
+        // Update T1 position during movement
+        function updateT1Movement(t1Source) {
+            if (!t1Source.isMoving) {
+                return;
+            }
+            
+            const currentTime = performance.now() / 1000; // Current time in seconds
+            const elapsed = currentTime - t1Source.movementStartTime;
+            
+            if (elapsed >= t1Source.movementDuration) {
+                // Movement completed, start new movement
+                startT1Movement(t1Source);
+                return;
+            }
+            
+            // Calculate progress (0 to 1)
+            const progress = elapsed / t1Source.movementDuration;
+            
+            // Use smooth easing (ease-in-out)
+            const easedProgress = progress < 0.5 
+                ? 2 * progress * progress 
+                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+            
+            // Interpolate angle
+            let currentAngle = t1Source.startAngle + (t1Source.endAngle - t1Source.startAngle) * easedProgress;
+            
+            // Calculate position
+            let newX = state.ringCenter.x + Math.cos(currentAngle) * t1Source.currentRingRadius;
+            let newY = state.ringCenter.y + Math.sin(currentAngle) * t1Source.currentRingRadius;
+            
+            // Clamp position if it would enter restricted area, get too close to B6, or go outside max ring
+            if (isInRestrictedArea(newX, newY) || isTooCloseToB6(newX, newY) || isOutsideMaxRing(newX, newY)) {
+                // If position is invalid, use previous position
+                return;
+            }
+            
+            // Update position on the ring
+            t1Source.x = newX;
+            t1Source.y = newY;
+        }
+        
+        // Check if position is in the restricted area (bottom-right quadrant)
+        function isInRestrictedArea(x, y) {
+            const centerX = state.worldSize / 2; // 120
+            const centerY = state.worldSize / 2; // 120
+            // Bottom-right quadrant: x > centerX && y > centerY
+            return x > centerX && y > centerY;
+        }
+        
+        // Check if position is too close to B6
+        function isTooCloseToB6(x, y, minDistance = 40) {
+            // B6 position is (75, 18) - hardcoded to avoid dependency on state.sources timing
+            const b6X = 75;
+            const b6Y = 18;
+            const dist = distance(x, y, b6X, b6Y);
+            return dist < minDistance;
+        }
+        
+        // Check if position is outside 220 radius ring
+        function isOutsideMaxRing(x, y, maxRadius = 220) {
+            const dx = x - state.ringCenter.x;
+            const dy = y - state.ringCenter.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            return dist > maxRadius;
+        }
+        
+        // Define routes for X1 movement
+        function getX1Routes() {
+            const allRoutes = [
+                // C1 to C4 and back
+                { start: { x: 116, y: 221 }, end: { x: 22, y: 172 }, name: 'C1-C4' },
+                { start: { x: 22, y: 172 }, end: { x: 116, y: 221 }, name: 'C4-C1' },
+                // A1 to A7 and back
+                { start: { x: 194, y: 206 }, end: { x: 30, y: 95 }, name: 'A1-A7' },
+                { start: { x: 30, y: 95 }, end: { x: 194, y: 206 }, name: 'A7-A1' },
+                // B1 to B6 and back (filtered - B6 too close)
+                { start: { x: 180, y: 159 }, end: { x: 75, y: 18 }, name: 'B1-B6' },
+                { start: { x: 75, y: 18 }, end: { x: 180, y: 159 }, name: 'B6-B1' },
+                // D1 to D4 and back
+                { start: { x: 221, y: 116 }, end: { x: 172, y: 22 }, name: 'D1-D4' },
+                { start: { x: 172, y: 22 }, end: { x: 221, y: 116 }, name: 'D4-D1' }
+            ];
+            
+            // Return all routes - filtering will be done during movement (clamping)
+            // This ensures X1 can always appear, and movement restrictions are enforced during update
+            return allRoutes;
+        }
+        
+        // Initialize X1 moving source
+        function initX1Source() {
+            // Find X1 source or create it
+            let x1Source = state.sources.find(s => s.id === 'X1');
+            if (!x1Source) {
+                x1Source = {
+                    id: 'X1',
+                    x: state.ringCenter.x,
+                    y: state.ringCenter.y,
+                    audioBuffer: null,
+                    sourceNode: null,
+                    gainNode: null,
+                    pannerNode: null,
+                    rmax: state.globalRmax,
+                    falloffPower: state.falloffPower,
+                    gainSmoothness: 1.00, // Gain fade smoothness (time constant in seconds)
+                    muted: false,
+                    solo: false,
+                    visualAlpha: 0,
+                    // Movement properties
+                    isMoving: false,
+                    isVisible: false, // For fade in/out
+                    currentRoute: null,
+                    startProgress: null, // Start position on route (0-1)
+                    endProgress: null, // End position on route (0-1)
+                    movementDuration: null,
+                    movementStartTime: null,
+                    fadeInDuration: 0.5, // 0.5 seconds fade in
+                    fadeOutDuration: 0.5, // 0.5 seconds fade out
+                    fadeStartTime: null,
+                    fadeType: null, // 'in' or 'out'
+                    fadeMultiplier: 0, // 0 to 1, for audio and visual fade
+                };
+                state.sources.push(x1Source);
+                updateSourcesList();
+                updateMixerList();
+            }
+            
+            // Start X1 movement
+            startX1Movement(x1Source);
+        }
+        
+        // Start X1 movement on a random route
+        function startX1Movement(x1Source) {
+            const routes = getX1Routes();
+            
+            // Safety check: if no routes available, return early
+            if (!routes || routes.length === 0) {
+                console.warn('[X1] No valid routes available, skipping movement');
+                return;
+            }
+            
+            const selectedRoute = routes[Math.floor(Math.random() * routes.length)];
+            
+            // Safety check: if selectedRoute is undefined or invalid, return early
+            if (!selectedRoute || !selectedRoute.start || !selectedRoute.end) {
+                console.warn('[X1] Selected route is invalid, skipping movement', selectedRoute);
+                return;
+            }
+            
+            // Find valid progress range that avoids restricted area
+            // Use simple random range - restrictions will be enforced during movement (clamping)
+            let startProgress, endProgress;
+            let attempts = 0;
+            let foundValid = false;
+            
+            // Try to find a valid range, but don't be too strict
+            do {
+                startProgress = Math.random(); // 0 to 1
+                const routeLength = 0.3 + Math.random() * 0.5; // 30% to 80% of route
+                endProgress = startProgress + routeLength;
+                if (endProgress > 1) {
+                    endProgress = 1;
+                }
+                
+                // Check if start and end positions are valid (only check restricted area - most important)
+                const startX = selectedRoute.start.x + (selectedRoute.end.x - selectedRoute.start.x) * startProgress;
+                const startY = selectedRoute.start.y + (selectedRoute.end.y - selectedRoute.start.y) * startProgress;
+                const endX = selectedRoute.start.x + (selectedRoute.end.x - selectedRoute.start.x) * endProgress;
+                const endY = selectedRoute.start.y + (selectedRoute.end.y - selectedRoute.start.y) * endProgress;
+                
+                // Only check restricted area - B6 and max ring will be handled during movement
+                const startValid = !isInRestrictedArea(startX, startY);
+                const endValid = !isInRestrictedArea(endX, endY);
+                
+                if (startValid && endValid) {
+                    foundValid = true;
+                    break;
+                }
+                attempts++;
+            } while (attempts < 50); // Reasonable attempts
+            
+            // If no valid range found, use simple random range (will be clamped during movement)
+            if (!foundValid) {
+                startProgress = Math.random() * 0.5; // Start in first half
+                endProgress = 0.5 + Math.random() * 0.5; // End in second half
+            }
+            
+            // Random movement duration between 6-10 seconds (similar to T1)
+            const duration = 6 + Math.random() * 4; // 6 to 10 seconds
+            
+            // Set movement properties
+            x1Source.isMoving = true;
+            x1Source.currentRoute = selectedRoute;
+            x1Source.startProgress = startProgress;
+            x1Source.endProgress = endProgress;
+            x1Source.movementDuration = duration;
+            x1Source.movementStartTime = performance.now() / 1000; // Convert to seconds
+            
+            // Calculate initial position
+            const initialX = selectedRoute.start.x + (selectedRoute.end.x - selectedRoute.start.x) * startProgress;
+            const initialY = selectedRoute.start.y + (selectedRoute.end.y - selectedRoute.start.y) * startProgress;
+            x1Source.x = initialX;
+            x1Source.y = initialY;
+            
+            // Start fade in
+            x1Source.isVisible = true;
+            x1Source.fadeType = 'in';
+            x1Source.fadeStartTime = performance.now() / 1000;
+            
+            // Load random audio file and start from random position (async, fire and forget)
+            loadAndStartRandomAudio(x1Source, 'X1');
+        }
+        
+        // Update X1 position during movement
+        function updateX1Movement(x1Source) {
+            if (!x1Source.isMoving || !x1Source.currentRoute) {
+                return;
+            }
+            
+            const currentTime = performance.now() / 1000; // Current time in seconds
+            const elapsed = currentTime - x1Source.movementStartTime;
+            
+            // Handle fade in
+            if (x1Source.fadeType === 'in' && x1Source.fadeStartTime !== null) {
+                const fadeElapsed = currentTime - x1Source.fadeStartTime;
+                if (fadeElapsed >= x1Source.fadeInDuration) {
+                    x1Source.fadeType = null;
+                    x1Source.fadeStartTime = null;
+                }
+            }
+            
+            // Check if movement is complete
+            if (elapsed >= x1Source.movementDuration) {
+                // Start fade out if not already started
+                if (x1Source.fadeType !== 'out') {
+                    x1Source.fadeType = 'out';
+                    x1Source.fadeStartTime = currentTime;
+                }
+            }
+            
+            // Handle fade out (if movement is ending)
+            if (x1Source.fadeType === 'out' && x1Source.fadeStartTime !== null) {
+                const fadeElapsed = currentTime - x1Source.fadeStartTime;
+                if (fadeElapsed >= x1Source.fadeOutDuration) {
+                    // Fade out complete, start new movement
+                    x1Source.isVisible = false;
+                    x1Source.fadeType = null;
+                    x1Source.fadeStartTime = null;
+                    startX1Movement(x1Source);
+                    return;
+                }
+                // During fade out, don't update position (movement is complete)
+                return;
+            }
+            
+            // Calculate progress (0 to 1)
+            const progress = Math.min(elapsed / x1Source.movementDuration, 1);
+            
+            // Use smooth easing (ease-in-out)
+            const easedProgress = progress < 0.5 
+                ? 2 * progress * progress 
+                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+            
+            // Interpolate position on route
+            const routeProgress = x1Source.startProgress + (x1Source.endProgress - x1Source.startProgress) * easedProgress;
+            let newX = x1Source.currentRoute.start.x + (x1Source.currentRoute.end.x - x1Source.currentRoute.start.x) * routeProgress;
+            let newY = x1Source.currentRoute.start.y + (x1Source.currentRoute.end.y - x1Source.currentRoute.start.y) * routeProgress;
+            
+            // Clamp position if it would enter restricted area, get too close to B6, or go outside max ring
+            if (isInRestrictedArea(newX, newY) || isTooCloseToB6(newX, newY) || isOutsideMaxRing(newX, newY)) {
+                // If position is invalid, use previous position
+                return;
+            }
+            
+            x1Source.x = newX;
+            x1Source.y = newY;
+        }
+        
+        // Update X1 fade (for audio and visual)
+        function updateX1Fade(x1Source) {
+            if (!x1Source.isVisible) {
+                // Not visible - set fade to 0
+                x1Source.fadeMultiplier = 0;
+                return;
+            }
+            
+            if (!x1Source.fadeStartTime || !x1Source.fadeType) {
+                // No fade in progress - fully visible
+                x1Source.fadeMultiplier = 1;
+                return;
+            }
+            
+            const currentTime = performance.now() / 1000;
+            const fadeElapsed = currentTime - x1Source.fadeStartTime;
+            
+            if (x1Source.fadeType === 'in') {
+                const fadeProgress = Math.min(fadeElapsed / x1Source.fadeInDuration, 1);
+                x1Source.fadeMultiplier = fadeProgress; // 0 to 1
+            } else if (x1Source.fadeType === 'out') {
+                const fadeProgress = Math.min(fadeElapsed / x1Source.fadeOutDuration, 1);
+                x1Source.fadeMultiplier = 1 - fadeProgress; // 1 to 0
+            } else {
+                x1Source.fadeMultiplier = 1;
+            }
         }
         
         // Auto-load audio files matching source names
@@ -1184,6 +1711,20 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     draw(); // Draw with button visible and loading bar still showing
                     requestAnimationFrame(() => {
                         state.loadingProgress.isLoading = false;
+                        
+                        // Set master volume to -60 dB when loading completes
+                        // This ensures all sources will be silent when they start
+                        if (state.masterGain) {
+                            state.masterVolume = -60;
+                            state.masterGain.gain.value = dbToLin(-60);
+                            
+                            // Update UI
+                            const masterVolTab = document.getElementById('masterVol');
+                            const masterVolValue = document.getElementById('masterVolValue');
+                            if (masterVolTab) masterVolTab.value = -60;
+                            if (masterVolValue) masterVolValue.textContent = '-60.0';
+                        }
+                        
                         draw(); // Now hide loading bar, overlay stays because showListenButton is true
                     });
                 });
@@ -1191,6 +1732,18 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 console.log('[Auto-load] No audio files found. Make sure files are named like A1.mp3, A2.wav, etc.');
                 // Hide loading bar even if no files loaded
                 state.loadingProgress.isLoading = false;
+                
+                // Set master volume to -60 dB even if no files loaded
+                if (state.masterGain) {
+                    state.masterVolume = -60;
+                    state.masterGain.gain.value = dbToLin(-60);
+                    
+                    // Update UI
+                    const masterVolTab = document.getElementById('masterVol');
+                    const masterVolValue = document.getElementById('masterVolValue');
+                    if (masterVolTab) masterVolTab.value = -60;
+                    if (masterVolValue) masterVolValue.textContent = '-60.0';
+                }
             }
         }
         
@@ -1261,7 +1814,15 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             state.masterMakeupGain.connect(state.masterAnalyser);
             state.masterAnalyser.connect(state.audioCtx.destination);
             
+            // Set initial master volume to -60 dB
+            state.masterVolume = -60;
             state.masterGain.gain.value = dbToLin(state.masterVolume);
+            
+            // Update UI to show -60 dB
+            const masterVolTab = document.getElementById('masterVol');
+            const masterVolValue = document.getElementById('masterVolValue');
+            if (masterVolTab) masterVolTab.value = state.masterVolume;
+            if (masterVolValue) masterVolValue.textContent = state.masterVolume.toFixed(1);
         }
         
         // Toggle compressor on/off by bypassing it
@@ -1342,7 +1903,28 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 }
             }
             
-            // Start all sources with audio buffers
+            // Set master volume to -60 dB BEFORE starting sources to prevent any sound
+            const fadeStartDb = -60;
+            const fadeEndDb = 0;
+            const fadeDuration = 3.0; // 3 seconds
+            
+            if (state.masterGain) {
+                // Immediately set to -60 dB before starting any sources
+                state.masterVolume = fadeStartDb;
+                state.masterGain.gain.value = dbToLin(fadeStartDb);
+                
+                // Update UI immediately
+                const masterVolTab = document.getElementById('masterVol');
+                const masterVolValue = document.getElementById('masterVolValue');
+                if (masterVolTab) masterVolTab.value = fadeStartDb;
+                if (masterVolValue) masterVolValue.textContent = fadeStartDb.toFixed(1);
+            }
+            
+            // Set isPlaying to true BEFORE starting sources
+            // This allows startSource to work (it checks isPlaying)
+            state.isPlaying = true;
+            
+            // Start all sources with audio buffers (they will be silent at -60 dB)
             let startedCount = 0;
             for (const source of state.sources) {
                 if (source.audioBuffer && !source.sourceNode) {
@@ -1351,19 +1933,56 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 }
             }
             
-            if (startedCount > 0 || state.isPlaying) {
-                state.isPlaying = true;
-                updateAudioStatus();
-                console.log(`[Audio] Started ${startedCount} sources`);
-                return true;
-            } else {
-                console.warn('[Audio] No sources to start');
-                return false;
+            // Always start fade in when Start button is pressed (even if no new sources started)
+            // Master volume fade in: -60 dB to 0 dB over 3 seconds
+            if (state.masterGain) {
+                // Fade to 0 dB over 3 seconds
+                const now = state.audioCtx.currentTime;
+                const targetGain = dbToLin(fadeEndDb);
+                state.masterGain.gain.setTargetAtTime(targetGain, now, fadeDuration);
+                
+                // Update state.masterVolume gradually (for UI display and meter)
+                const fadeStartTime = performance.now();
+                const updateVolume = () => {
+                    const elapsed = (performance.now() - fadeStartTime) / 1000;
+                    const progress = Math.min(elapsed / fadeDuration, 1);
+                    const currentDb = fadeStartDb + (fadeEndDb - fadeStartDb) * progress;
+                    state.masterVolume = currentDb;
+                    
+                    // Update UI
+                    const masterVolTab = document.getElementById('masterVol');
+                    const masterVolValue = document.getElementById('masterVolValue');
+                    if (masterVolTab) masterVolTab.value = currentDb;
+                    if (masterVolValue) masterVolValue.textContent = currentDb.toFixed(1);
+                    
+                    // Update master volume meter
+                    updateMasterVolumeMeter();
+                    
+                    if (progress < 1) {
+                        requestAnimationFrame(updateVolume);
+                    } else {
+                        // Fade complete
+                        state.masterVolume = fadeEndDb;
+                        if (masterVolTab) masterVolTab.value = fadeEndDb;
+                        if (masterVolValue) masterVolValue.textContent = fadeEndDb.toFixed(1);
+                        updateMasterVolumeMeter();
+                    }
+                };
+                requestAnimationFrame(updateVolume);
             }
+            
+            updateAudioStatus();
+            console.log(`[Audio] Started ${startedCount} sources with master volume fade in`);
+            return true;
         }
         
         // Centralized auto-start function to avoid race conditions
         async function attemptAutoStart() {
+            // DISABLED: Only start audio when Start button is pressed
+            // This prevents any sound from playing before user clicks Start
+            console.log('[Auto-start] attemptAutoStart() called but disabled - audio will only start when Start button is pressed');
+            return;
+            
             console.log('[Auto-start] attemptAutoStart() called');
             
             // Check if we have any audio buffers loaded
@@ -1479,6 +2098,20 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
         function startSource(source) {
             if (!state.audioCtx || !source.audioBuffer) return;
             
+            // CRITICAL: Only start sources when isPlaying is true (Start button pressed)
+            // This prevents any sound from playing before user clicks Start
+            if (!state.isPlaying) {
+                console.log(`[startSource] Skipping ${source.id} - audio not playing yet`);
+                return;
+            }
+            
+            // Ensure master volume is at -60 dB before starting source
+            // This prevents any sound from playing
+            if (state.masterGain && state.masterVolume > -60) {
+                state.masterVolume = -60;
+                state.masterGain.gain.value = dbToLin(-60);
+            }
+            
             const sourceNode = state.audioCtx.createBufferSource();
             sourceNode.buffer = source.audioBuffer;
             sourceNode.loop = true;
@@ -1494,7 +2127,9 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             source.gainNode = gainNode;
             source.pannerNode = pannerNode;
             
+            // Set initial gain to 0 to ensure silence
             gainNode.gain.value = 0;
+            gainNode.gain.setValueAtTime(0, state.audioCtx.currentTime);
             pannerNode.pan.value = 0;
             
             sourceNode.start(0);
@@ -1531,9 +2166,26 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 }
             }
             
-            // Smooth gain update
+            // Apply fade multiplier for X1 (fade in/out)
+            if (source.id === 'X1' && source.fadeMultiplier !== undefined) {
+                targetGain *= source.fadeMultiplier;
+            }
+            
+            // Apply T/X mute multiplier (A1/B1/B6 level-based mute)
+            let gainBeforeMute = targetGain;
+            if ((source.id === 'T1' || source.id === 'X1') && source.txMuteMultiplier !== undefined) {
+                targetGain *= source.txMuteMultiplier;
+                
+                // Debug: log X1 gain calculation
+                if (source.id === 'X1' && Math.random() < 0.02) {
+                    console.log(`[X1 Gain] Before mute: ${gainBeforeMute.toFixed(4)}, txMuteMultiplier: ${source.txMuteMultiplier.toFixed(3)}, After mute: ${targetGain.toFixed(4)}`);
+                }
+            }
+            
+            // Smooth gain update (use source-specific smoothness)
             const now = state.audioCtx.currentTime;
-            source.gainNode.gain.setTargetAtTime(targetGain, now, 0.05);
+            const smoothness = source.gainSmoothness !== undefined ? source.gainSmoothness : 0.05;
+            source.gainNode.gain.setTargetAtTime(targetGain, now, smoothness);
             
             // Calculate pan
             if (state.panningEnabled) {
@@ -1561,6 +2213,163 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             const nearestNIndices = new Set();
             for (let i = 0; i < Math.min(state.nearestN, sourcesWithAudio.length); i++) {
                 nearestNIndices.add(sourcesWithAudio[i].index);
+            }
+            
+            // Check A1, B1, and B6 levels to determine T/X mute state
+            // A1 and B1 affect both T1 and X1
+            // B6 only affects X1
+            // Calculate target gain for A1, B1, and B6
+            const a1Source = state.sources.find(s => s.id === 'A1');
+            const b1Source = state.sources.find(s => s.id === 'B1');
+            const b6Source = state.sources.find(s => s.id === 'B6');
+            const thresholdDb = -20;
+            const thresholdLinear = dbToLin(thresholdDb);
+            
+            let shouldMuteTX = false; // For T1 and X1 (A1/B1 control)
+            let shouldMuteX1 = false; // For X1 only (B6 control)
+            
+            // Calculate A1 target gain
+            if (a1Source && a1Source.audioBuffer && a1Source.gainNode) {
+                const a1Index = state.sources.indexOf(a1Source);
+                const isA1InNearestN = nearestNIndices.has(a1Index);
+                const dA1 = distance(state.listener.x, state.listener.y, a1Source.x, a1Source.y);
+                let a1TargetGain = 0;
+                if (isA1InNearestN && dA1 < a1Source.rmax) {
+                    const normalized = 1 - (dA1 / a1Source.rmax);
+                    const curved = Math.pow(normalized, a1Source.falloffPower);
+                    const gainMaxLinear = dbToLin(-4);
+                    a1TargetGain = curved * gainMaxLinear;
+                }
+                // Check mute/solo
+                const hasSolo = state.sources.some(s => s.solo);
+                if (hasSolo && !a1Source.solo) {
+                    a1TargetGain = 0;
+                } else if (!hasSolo && a1Source.muted) {
+                    a1TargetGain = 0;
+                }
+                
+                if (a1TargetGain > thresholdLinear) {
+                    shouldMuteTX = true;
+                }
+            }
+            
+            // Calculate B1 target gain
+            if (!shouldMuteTX && b1Source && b1Source.audioBuffer && b1Source.gainNode) {
+                const b1Index = state.sources.indexOf(b1Source);
+                const isB1InNearestN = nearestNIndices.has(b1Index);
+                const dB1 = distance(state.listener.x, state.listener.y, b1Source.x, b1Source.y);
+                let b1TargetGain = 0;
+                if (isB1InNearestN && dB1 < b1Source.rmax) {
+                    const normalized = 1 - (dB1 / b1Source.rmax);
+                    const curved = Math.pow(normalized, b1Source.falloffPower);
+                    const gainMaxLinear = dbToLin(-4);
+                    b1TargetGain = curved * gainMaxLinear;
+                }
+                // Check mute/solo
+                const hasSolo = state.sources.some(s => s.solo);
+                if (hasSolo && !b1Source.solo) {
+                    b1TargetGain = 0;
+                } else if (!hasSolo && b1Source.muted) {
+                    b1TargetGain = 0;
+                }
+                
+                if (b1TargetGain > thresholdLinear) {
+                    shouldMuteTX = true;
+                }
+            }
+            
+            // Check B6 distance (only for X1)
+            // If listener is within 30 units of B6, mute X1
+            if (b6Source) {
+                const dB6 = distance(state.listener.x, state.listener.y, b6Source.x, b6Source.y);
+                if (dB6 < 30) {
+                    shouldMuteX1 = true;
+                }
+                // Debug: log B6 distance occasionally
+                if (Math.random() < 0.02) { // 2% chance
+                    console.log(`[B6 Distance Check] B6 pos: (${b6Source.x.toFixed(1)}, ${b6Source.y.toFixed(1)}), Listener pos: (${state.listener.x.toFixed(1)}, ${state.listener.y.toFixed(1)}), Distance: ${dB6.toFixed(2)}, shouldMuteX1: ${shouldMuteX1}`);
+                }
+            } else {
+                // Debug: B6 not found
+                if (Math.random() < 0.01) {
+                    console.warn('[B6 Distance Check] B6 source not found!');
+                }
+            }
+            
+            // Update T/X mute multiplier with smooth fade
+            const fadeTimeConstant = 0.05; // Time constant for fade in/out (seconds) - faster for more responsive muting
+            const currentTime = performance.now() / 1000;
+            let dt = (currentTime - (state.lastTXMuteUpdate || currentTime));
+            // Ensure dt is reasonable (cap at 0.1 seconds to prevent huge jumps)
+            if (dt > 0.1) dt = 0.1;
+            // dt is already in seconds (performance.now() returns milliseconds, we divide by 1000 above)
+            state.lastTXMuteUpdate = currentTime;
+            
+            // Update T1 and X1 mute multipliers
+            const t1Source = state.sources.find(s => s.id === 'T1');
+            const x1Source = state.sources.find(s => s.id === 'X1');
+            
+            if (t1Source) {
+                if (t1Source.txMuteMultiplier === undefined) {
+                    t1Source.txMuteMultiplier = 1; // Initialize to 1 (not muted)
+                }
+                const targetMultiplier = shouldMuteTX ? 0 : 1;
+                const currentMultiplier = t1Source.txMuteMultiplier;
+                
+                // Smooth exponential transition
+                if (Math.abs(currentMultiplier - targetMultiplier) > 0.001) {
+                    const smoothingFactor = 1 - Math.exp(-dt / fadeTimeConstant);
+                    t1Source.txMuteMultiplier = currentMultiplier + (targetMultiplier - currentMultiplier) * smoothingFactor;
+                    t1Source.txMuteMultiplier = clamp(t1Source.txMuteMultiplier, 0, 1);
+                } else {
+                    t1Source.txMuteMultiplier = targetMultiplier;
+                }
+            }
+            
+            if (x1Source) {
+                if (x1Source.txMuteMultiplier === undefined) {
+                    x1Source.txMuteMultiplier = 1; // Initialize to 1 (not muted)
+                }
+                // X1: affected by A1/B1 (shouldMuteTX) OR B6 (shouldMuteX1)
+                const targetMultiplier = (shouldMuteTX || shouldMuteX1) ? 0 : 1;
+                const currentMultiplier = x1Source.txMuteMultiplier;
+                
+                // Debug: log X1 mute state
+                if (Math.random() < 0.02) { // 2% chance
+                    console.log(`[X1 Mute] shouldMuteTX: ${shouldMuteTX}, shouldMuteX1: ${shouldMuteX1}, targetMultiplier: ${targetMultiplier}, currentMultiplier: ${currentMultiplier.toFixed(3)}, txMuteMultiplier: ${x1Source.txMuteMultiplier.toFixed(3)}`);
+                }
+                
+                // If muting (targetMultiplier === 0), apply faster fade or direct mute
+                if (targetMultiplier === 0) {
+                    // Use faster fade for muting
+                    const muteFadeTimeConstant = 0.02; // Even faster for muting
+                    if (Math.abs(currentMultiplier - targetMultiplier) > 0.001) {
+                        const smoothingFactor = 1 - Math.exp(-dt / muteFadeTimeConstant);
+                        x1Source.txMuteMultiplier = currentMultiplier + (targetMultiplier - currentMultiplier) * smoothingFactor;
+                        x1Source.txMuteMultiplier = clamp(x1Source.txMuteMultiplier, 0, 1);
+                        
+                        // If very close to 0, set to 0 directly for complete silence
+                        if (x1Source.txMuteMultiplier < 0.01) {
+                            x1Source.txMuteMultiplier = 0;
+                        }
+                    } else {
+                        x1Source.txMuteMultiplier = 0;
+                    }
+                } else {
+                    // Normal fade for unmuting
+                    if (Math.abs(currentMultiplier - targetMultiplier) > 0.001) {
+                        const smoothingFactor = 1 - Math.exp(-dt / fadeTimeConstant);
+                        x1Source.txMuteMultiplier = currentMultiplier + (targetMultiplier - currentMultiplier) * smoothingFactor;
+                        x1Source.txMuteMultiplier = clamp(x1Source.txMuteMultiplier, 0, 1);
+                    } else {
+                        x1Source.txMuteMultiplier = targetMultiplier;
+                    }
+                }
+            } else {
+                // Debug: X1 not found
+                if (Math.random() < 0.01) {
+                    console.warn('[X1 Mute] X1 source not found!');
+                }
             }
             
             // Update all sources
@@ -1709,7 +2518,11 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     ctx.setLineDash([]);
                     
                     // Draw active ring with smooth alpha fade (yellow if solo, green otherwise)
-                    const alpha = clamp(source.visualAlpha || 0, 0, 1);
+                    let alpha = clamp(source.visualAlpha || 0, 0, 1);
+                    // Apply fade multiplier for X1
+                    if (source.id === 'X1' && source.fadeMultiplier !== undefined) {
+                        alpha *= source.fadeMultiplier;
+                    }
                     if (alpha > 0.01) {
                         if (source.solo) {
                             ctx.strokeStyle = `rgba(255, 255, 0, ${alpha})`; // Yellow for solo
@@ -1736,12 +2549,16 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     fillColor = '#666'; // Gray for no audio
                 }
                 
-                // Apply opacity if muted
+                // Apply opacity if muted or X1 fade
+                let sourceOpacity = 1.0;
                 if (source.muted) {
-                    ctx.globalAlpha = 0.5;
-                } else {
-                    ctx.globalAlpha = 1.0;
+                    sourceOpacity = 0.5;
                 }
+                // Apply fade multiplier for X1
+                if (source.id === 'X1' && source.fadeMultiplier !== undefined) {
+                    sourceOpacity *= source.fadeMultiplier;
+                }
+                ctx.globalAlpha = sourceOpacity;
                 
                 ctx.fillStyle = fillColor;
                 ctx.beginPath();
@@ -1754,12 +2571,16 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 // Draw label (A1, A2, B1, B2, etc.) if enabled
                 if (state.showSourceLabels) {
                     const labelText = source.id;
-                    // Apply opacity if muted
+                    // Apply opacity if muted or X1 fade
+                    let labelOpacity = 1.0;
                     if (source.muted) {
-                        ctx.globalAlpha = 0.5;
-                    } else {
-                        ctx.globalAlpha = 1.0;
+                        labelOpacity = 0.5;
                     }
+                    // Apply fade multiplier for X1
+                    if (source.id === 'X1' && source.fadeMultiplier !== undefined) {
+                        labelOpacity *= source.fadeMultiplier;
+                    }
+                    ctx.globalAlpha = labelOpacity;
                     ctx.fillStyle = '#fff';
                     ctx.font = '8px sans-serif';
                     // Add subtle outline for readability
@@ -1775,7 +2596,11 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 
                 // Draw line to listener if debug (with smooth alpha fade)
                 if (state.debugVisuals && source.audioBuffer) {
-                    const alpha = clamp(source.visualAlpha || 0, 0, 1);
+                    let alpha = clamp(source.visualAlpha || 0, 0, 1);
+                    // Apply fade multiplier for X1
+                    if (source.id === 'X1' && source.fadeMultiplier !== undefined) {
+                        alpha *= source.fadeMultiplier;
+                    }
                     if (alpha > 0.01) {
                         ctx.strokeStyle = `rgba(0, 255, 0, ${alpha * 0.5})`;
                         ctx.lineWidth = 0.5;
@@ -2001,6 +2826,19 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             // Update visual alpha (always, for smooth fading)
             updateVisualAlpha();
             
+            // Update T1 movement
+            const t1Source = state.sources.find(s => s.id === 'T1');
+            if (t1Source) {
+                updateT1Movement(t1Source);
+            }
+            
+            // Update X1 movement and fade
+            const x1Source = state.sources.find(s => s.id === 'X1');
+            if (x1Source) {
+                updateX1Movement(x1Source);
+                updateX1Fade(x1Source);
+            }
+            
             // Update master volume meter
             updateMasterVolumeMeter();
             
@@ -2124,6 +2962,10 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                         <label style="display: block; font-size: 11px; color: #ccc; margin-bottom: 4px;">Falloff Power: <span class="mixer-falloff-value-${i}">${source.falloffPower.toFixed(1)}</span></label>
                         <input type="range" class="mixer-falloff" data-index="${i}" min="0.5" max="5" value="${source.falloffPower}" step="0.1" style="width: 100%;">
                     </div>
+                    <div style="margin-top: 8px;">
+                        <label style="display: block; font-size: 11px; color: #ccc; margin-bottom: 4px;">Fade Smoothness: <span class="mixer-smoothness-value-${i}">${(source.gainSmoothness || 0.05).toFixed(2)}</span>s</label>
+                        <input type="range" class="mixer-smoothness" data-index="${i}" min="0.01" max="1.0" value="${source.gainSmoothness || 0.05}" step="0.01" style="width: 100%;">
+                    </div>
                 `;
                 
                 list.appendChild(item);
@@ -2161,6 +3003,15 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     const value = parseFloat(e.target.value);
                     state.sources[index].falloffPower = value;
                     document.querySelector(`.mixer-falloff-value-${index}`).textContent = value.toFixed(1);
+                });
+            });
+            
+            document.querySelectorAll('.mixer-smoothness').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    const value = parseFloat(e.target.value);
+                    state.sources[index].gainSmoothness = value;
+                    document.querySelector(`.mixer-smoothness-value-${index}`).textContent = value.toFixed(2) + 's';
                 });
             });
         }
@@ -2325,34 +3176,27 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     // Resume audio context and start playback
                     if (state.audioCtx && state.audioCtx.state === 'suspended') {
                         state.audioCtx.resume().then(() => {
-                            console.log('[Listen Button] Audio context resumed');
-                            attemptAutoStart();
+                            console.log('[Start Button] Audio context resumed');
+                            startAudio();
                         }).catch(err => {
-                            console.warn('[Listen Button] Failed to resume:', err);
+                            console.warn('[Start Button] Failed to resume:', err);
                         });
                     } else {
-                        attemptAutoStart();
+                        startAudio();
                     }
                     return; // Don't process other click actions
                 }
             }
             
             // Handle audio context resume on first user interaction (for autoplay policy)
+            // Note: Audio will only start when Start button is pressed, not on general user interaction
             if (state.audioCtx && state.audioCtx.state === 'suspended' && !state.isPlaying) {
-                const hasAudio = state.sources.some(s => s.audioBuffer);
-                if (hasAudio) {
-                    // User interaction detected - try to resume and start audio
-                    console.log('[User Interaction] Resuming audio context and starting audio...');
-                    state.audioCtx.resume().then(() => {
-                        console.log('[User Interaction] Audio context resumed');
-                        // Try to start audio after resume
-                        if (!state.isPlaying) {
-                            attemptAutoStart();
-                        }
-                    }).catch(err => {
-                        console.warn('[User Interaction] Failed to resume:', err);
-                    });
-                }
+                // Just resume audio context, don't start audio automatically
+                state.audioCtx.resume().then(() => {
+                    console.log('[User Interaction] Audio context resumed (audio will start when Start button is pressed)');
+                }).catch(err => {
+                    console.warn('[User Interaction] Failed to resume:', err);
+                });
             }
             
             const world = screenToWorld(e.clientX, e.clientY);
@@ -2379,6 +3223,8 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             if (!state.lockSourcePositions) {
                 for (let i = 0; i < state.sources.length; i++) {
                     const source = state.sources[i];
+                    // Skip T1 and X1 - they move automatically
+                    if (source.id === 'T1' || source.id === 'X1') continue;
                     const dist = distance(x, y, source.x, source.y);
                     if (dist < 10) {
                         state.dragging = { x, y };
@@ -2470,11 +3316,15 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 state.listener.x = x;
                 state.listener.y = y;
             } else if (typeof state.dragType === 'number') {
-                // Use fixed radius from drag start for snap to rings (only angle changes)
-                const snapped = snapToNearestRing(x, y, true);
-                state.sources[state.dragType].x = snapped.x;
-                state.sources[state.dragType].y = snapped.y;
-                updateSourcesList();
+                // Skip T1 and X1 - they move automatically
+                const source = state.sources[state.dragType];
+                if (source && source.id !== 'T1' && source.id !== 'X1') {
+                    // Use fixed radius from drag start for snap to rings (only angle changes)
+                    const snapped = snapToNearestRing(x, y, true);
+                    source.x = snapped.x;
+                    source.y = snapped.y;
+                    updateSourcesList();
+                }
             }
             
             draw();
@@ -2546,18 +3396,9 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
         if (hudStopBtn) hudStopBtn.addEventListener('click', stopAudio);
         
         // Tab controls
-        const masterVolTab = document.getElementById('masterVol');
-        if (masterVolTab) {
-            masterVolTab.addEventListener('input', (e) => {
-                const value = parseFloat(e.target.value);
-                state.masterVolume = value;
-                const valueDisplay = document.getElementById('masterVolValue');
-                if (valueDisplay) valueDisplay.textContent = value.toFixed(1);
-                if (state.masterGain) {
-                    state.masterGain.gain.value = dbToLin(value);
-                }
-            });
-        }
+        // Master volume fader removed - volume is controlled programmatically
+        // Master volume fader removed - volume is controlled programmatically
+        // (fade in from -60 dB to 0 dB on start, etc.)
         
         // Compressor controls
         const compressorEnabledCheckbox = document.getElementById('compressorEnabled');
@@ -3052,6 +3893,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     pannerNode: null,
                     rmax: state.globalRmax,
                     falloffPower: state.falloffPower,
+                    gainSmoothness: 0.05, // Gain fade smoothness (time constant in seconds)
                     muted: false,
                     solo: false,
                     visualAlpha: 0,
