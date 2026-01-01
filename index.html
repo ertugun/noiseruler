@@ -17,6 +17,9 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sound Ruler / Noise Ruler</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@200;300;400;500&display=block" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -479,8 +482,44 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             </div>
             
             <div id="tab-mixer" class="tab-pane">
-                <div id="mixerList" style="max-height: 400px; overflow-y: auto;">
+                <div id="mixerList" style="max-height: 300px; overflow-y: auto;">
                     <!-- Mixer list will be populated here -->
+                </div>
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                    <div style="margin-bottom: 12px; font-size: 12px; color: #ccc; font-weight: bold;">Compressor</div>
+                    <div class="control-group">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="compressorEnabled" checked style="margin-right: 8px;">
+                            <span>Enable Compressor</span>
+                        </label>
+                    </div>
+                    <div class="control-group">
+                        <label>Threshold: <span id="compressorThresholdValue">-25</span> dB</label>
+                        <input type="range" id="compressorThreshold" min="-40" max="0" value="-25" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label>Ratio: <span id="compressorRatioValue">1.5</span>:1</label>
+                        <input type="range" id="compressorRatio" min="1" max="20" value="1.5" step="0.5">
+                    </div>
+                    <div class="control-group">
+                        <label>Attack: <span id="compressorAttackValue">50</span> ms</label>
+                        <input type="range" id="compressorAttack" min="0" max="100" value="50" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label>Release: <span id="compressorReleaseValue">340</span> ms</label>
+                        <input type="range" id="compressorRelease" min="0" max="1000" value="340" step="10">
+                    </div>
+                    <div class="control-group">
+                        <label>Makeup Gain: <span id="compressorMakeupValue">3</span> dB</label>
+                        <input type="range" id="compressorMakeup" min="0" max="12" value="3" step="0.5">
+                    </div>
+                    <div style="margin-top: 15px; margin-bottom: 8px; font-size: 11px; color: #ccc;">Gain Reduction</div>
+                    <div id="gainReductionMeter" style="width: 100%; height: 20px; background: #1a1a1a; border: 1px solid #444; border-radius: 3px; position: relative; overflow: hidden;">
+                        <div id="gainReductionBar" style="height: 100%; width: 0%; background: linear-gradient(to right, #00cc33, #ffcc00, #ff3300); transition: width 0.05s linear;"></div>
+                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #fff; font-weight: bold; text-shadow: 0 0 2px #000;">
+                            <span id="gainReductionValue">0.0 dB</span>
+                        </div>
+                    </div>
                 </div>
                 <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
                     <div style="margin-bottom: 8px; font-size: 11px; color: #ccc;">Master Volume Meter</div>
@@ -665,7 +704,9 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             globalRmax: 80,
             falloffPower: 2.2,
             masterVolume: 0,
+            compressorEnabled: true, // Compressor on/off state
             isPlaying: false,
+            autoStartAttempted: false, // Track if auto-start has been attempted
             dragging: null,
             dragType: null, // 'listener' or source index
             dragStartRadius: null, // Radius from ring center when drag started (for snap to rings)
@@ -684,13 +725,35 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             visualPower: 1.8, // Visual falloff power for alpha
             visualTau: 0.18, // Visual alpha smoothing time constant (seconds)
             lastFrameTime: performance.now(),
+            loadingProgress: {
+                isLoading: false,
+                progress: 0, // 0 to 1
+                totalSources: 0,
+                loadedSources: 0,
+                showListenButton: false, // Show "Listen!" button after loading completes
+                overlayOpacity: 0.7, // Overlay opacity (fades out when listen button is clicked)
+                buttonOpacity: 0 // Button opacity (fades in when shown, fades out when clicked)
+            },
         };
         
         // Canvas setup
         const canvas = document.getElementById('canvas');
-        const ctx = canvas ? canvas.getContext('2d') : null;
+        const ctx = canvas ? canvas.getContext('2d', { 
+            alpha: true,
+            desynchronized: false,
+            willReadFrequently: false
+        }) : null;
         const canvasContainer = document.getElementById('canvas-container');
         const controlPanel = document.getElementById('control-panel');
+        
+        // Enable high-quality rendering for canvas
+        if (ctx) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            if (ctx.textRenderingOptimization) {
+                ctx.textRenderingOptimization = 'optimizeQuality';
+            }
+        }
         
         // Safety check
         if (!canvas || !ctx) {
@@ -1037,6 +1100,15 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             
             console.log('[Auto-load] Starting auto-load for all sources...');
             
+            // Initialize loading state
+            const sourcesToLoad = state.sources.filter(s => !s.audioBuffer).length;
+            if (sourcesToLoad > 0) {
+                state.loadingProgress.isLoading = true;
+                state.loadingProgress.totalSources = sourcesToLoad;
+                state.loadingProgress.loadedSources = 0;
+                state.loadingProgress.progress = 0;
+            }
+            
             // Wait a bit for audio context to be ready
             await new Promise(resolve => setTimeout(resolve, 200));
             
@@ -1058,16 +1130,67 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     if (state.sources[i].audioBuffer) {
                         loadedCount++;
                     }
+                    // Update loading progress
+                    if (state.loadingProgress.isLoading) {
+                        state.loadingProgress.loadedSources = loadedCount;
+                        state.loadingProgress.progress = loadedCount / state.loadingProgress.totalSources;
+                    }
                     // Small delay between requests to avoid overwhelming
                     await new Promise(resolve => setTimeout(resolve, 50));
                 }
             }
             
+            // Mark loading as complete
+            state.loadingProgress.progress = 1;
+            
+            // Force a redraw to show 100% loading bar
+            draw();
+            
             if (loadedCount > 0) {
                 console.log(`[Auto-load] Successfully loaded ${loadedCount} audio files`);
                 updateSourcesList();
+                
+                // Show "Listen!" button after loading completes
+                // Set showListenButton first to ensure overlay stays visible, then hide loading bar
+                // Use requestAnimationFrame to ensure smooth transition without flash
+                requestAnimationFrame(() => {
+                    state.loadingProgress.showListenButton = true;
+                    // Ensure overlay opacity is set for fade out later
+                    if (state.loadingProgress.overlayOpacity === undefined) {
+                        state.loadingProgress.overlayOpacity = 0.7;
+                    }
+                    // Start button fade in (2 seconds)
+                    state.loadingProgress.buttonOpacity = 0;
+                    const startTime = performance.now();
+                    const fadeInDuration = 2000; // 2 seconds
+                    
+                    const fadeIn = (currentTime) => {
+                        const elapsed = currentTime - startTime;
+                        const progress = Math.min(elapsed / fadeInDuration, 1);
+                        state.loadingProgress.buttonOpacity = progress;
+                        draw();
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(fadeIn);
+                        } else {
+                            state.loadingProgress.buttonOpacity = 1;
+                            draw();
+                        }
+                    };
+                    
+                    requestAnimationFrame(fadeIn);
+                    
+                    // Loading background GIF is already visible from loading bar phase
+                    draw(); // Draw with button visible and loading bar still showing
+                    requestAnimationFrame(() => {
+                        state.loadingProgress.isLoading = false;
+                        draw(); // Now hide loading bar, overlay stays because showListenButton is true
+                    });
+                });
             } else {
                 console.log('[Auto-load] No audio files found. Make sure files are named like A1.mp3, A2.wav, etc.');
+                // Hide loading bar even if no files loaded
+                state.loadingProgress.isLoading = false;
             }
         }
         
@@ -1115,37 +1238,227 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             state.masterGain = state.audioCtx.createGain();
             
+            // Create compressor for master output
+            state.masterCompressor = state.audioCtx.createDynamicsCompressor();
+            state.masterCompressor.threshold.value = -25; // -25 dB threshold
+            state.masterCompressor.ratio.value = 1.5; // 1.5:1 ratio
+            state.masterCompressor.attack.value = 0.05; // 50 ms attack
+            state.masterCompressor.release.value = 0.34; // 340 ms release
+            state.masterCompressor.knee.value = 0; // Hard knee
+            
+            // Create makeup gain (+3 dB after compressor)
+            state.masterMakeupGain = state.audioCtx.createGain();
+            state.masterMakeupGain.gain.value = dbToLin(3); // +3 dB makeup gain
+            
             // Create analyser for volume meter
             state.masterAnalyser = state.audioCtx.createAnalyser();
             state.masterAnalyser.fftSize = 2048;
             state.masterAnalyser.smoothingTimeConstant = 0.3;
             
-            // Connect: masterGain -> analyser -> destination
-            state.masterGain.connect(state.masterAnalyser);
+            // Connect: masterGain -> compressor -> makeupGain -> analyser -> destination
+            state.masterGain.connect(state.masterCompressor);
+            state.masterCompressor.connect(state.masterMakeupGain);
+            state.masterMakeupGain.connect(state.masterAnalyser);
             state.masterAnalyser.connect(state.audioCtx.destination);
             
             state.masterGain.gain.value = dbToLin(state.masterVolume);
         }
         
-        function startAudio() {
+        // Toggle compressor on/off by bypassing it
+        function toggleCompressor(enabled) {
+            if (!state.masterGain || !state.masterCompressor || !state.masterMakeupGain || !state.masterAnalyser) {
+                return;
+            }
+            
+            // Disconnect all connections from masterGain
+            state.masterGain.disconnect();
+            
+            // Disconnect compressor chain if it exists
+            state.masterCompressor.disconnect();
+            state.masterMakeupGain.disconnect();
+            
+            if (enabled) {
+                // Compressor ON: masterGain -> compressor -> makeupGain -> analyser -> destination
+                state.masterGain.connect(state.masterCompressor);
+                state.masterCompressor.connect(state.masterMakeupGain);
+                state.masterMakeupGain.connect(state.masterAnalyser);
+            } else {
+                // Compressor OFF: masterGain -> analyser -> destination (bypass compressor and makeup gain)
+                state.masterGain.connect(state.masterAnalyser);
+            }
+            
+            // Ensure analyser is connected to destination
+            try {
+                state.masterAnalyser.connect(state.audioCtx.destination);
+            } catch (e) {
+                // Already connected, ignore
+            }
+        }
+        
+        async function startAudio() {
             if (!state.audioCtx) {
                 initAudio();
             }
             
-            if (state.audioCtx.state === 'suspended') {
-                state.audioCtx.resume();
+            // Ensure audio context exists
+            if (!state.audioCtx) {
+                console.warn('Cannot start audio: audio context not available');
+                return false;
             }
             
-            // Start all sources with audio buffers
-            for (const source of state.sources) {
-                if (source.audioBuffer && !source.sourceNode) {
-                    startSource(source);
+            // Resume audio context if suspended (required for autoplay policy)
+            if (state.audioCtx.state === 'suspended') {
+                try {
+                    const resumePromise = state.audioCtx.resume();
+                    await resumePromise;
+                    console.log('[Audio] Audio context resumed successfully');
+                } catch (err) {
+                    console.warn('[Audio] Failed to resume audio context:', err);
+                    // Try again after a short delay
+                    try {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        if (state.audioCtx.state === 'suspended') {
+                            await state.audioCtx.resume();
+                            console.log('[Audio] Audio context resumed on retry');
+                        }
+                    } catch (retryErr) {
+                        console.warn('[Audio] Retry resume also failed:', retryErr);
+                        // Continue anyway - might work on user interaction
+                    }
                 }
             }
             
-            state.isPlaying = true;
-            updateAudioStatus();
-            // Note: renderLoop is already running, no need to call animate()
+            // Check if audio context is actually running
+            if (state.audioCtx.state !== 'running') {
+                console.warn(`[Audio] Audio context state is ${state.audioCtx.state}, may require user interaction`);
+                // Try one more time to resume
+                if (state.audioCtx.state === 'suspended') {
+                    try {
+                        await state.audioCtx.resume();
+                        console.log('[Audio] Audio context resumed after state check');
+                    } catch (err) {
+                        console.warn('[Audio] Final resume attempt failed:', err);
+                    }
+                }
+            }
+            
+            // Start all sources with audio buffers
+            let startedCount = 0;
+            for (const source of state.sources) {
+                if (source.audioBuffer && !source.sourceNode) {
+                    startSource(source);
+                    startedCount++;
+                }
+            }
+            
+            if (startedCount > 0 || state.isPlaying) {
+                state.isPlaying = true;
+                updateAudioStatus();
+                console.log(`[Audio] Started ${startedCount} sources`);
+                return true;
+            } else {
+                console.warn('[Audio] No sources to start');
+                return false;
+            }
+        }
+        
+        // Centralized auto-start function to avoid race conditions
+        async function attemptAutoStart() {
+            console.log('[Auto-start] attemptAutoStart() called');
+            
+            // Check if we have any audio buffers loaded
+            const hasAudio = state.sources.some(s => s.audioBuffer);
+            console.log(`[Auto-start] hasAudio: ${hasAudio}, isPlaying: ${state.isPlaying}, autoStartAttempted: ${state.autoStartAttempted}`);
+            
+            if (!hasAudio) {
+                console.log('[Auto-start] No audio files loaded yet, skipping auto-start');
+                return;
+            }
+            
+            // If already playing, don't attempt again
+            if (state.isPlaying) {
+                console.log('[Auto-start] Audio already playing, skipping');
+                return;
+            }
+            
+            // Only attempt once per session (unless explicitly reset)
+            if (state.autoStartAttempted) {
+                console.log('[Auto-start] Already attempted, skipping');
+                return;
+            }
+            
+            // Mark as attempted
+            state.autoStartAttempted = true;
+            
+            // Ensure audio context is ready
+            if (!state.audioCtx) {
+                try {
+                    initAudio();
+                } catch (err) {
+                    console.warn('[Auto-start] Failed to init audio context:', err);
+                    state.autoStartAttempted = false; // Allow retry
+                    return;
+                }
+            }
+            
+            // Wait a bit for everything to settle (especially audio context)
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Double-check audio context is ready
+            if (!state.audioCtx || state.audioCtx.state === 'closed') {
+                console.warn('[Auto-start] Audio context not ready');
+                state.autoStartAttempted = false; // Allow retry
+                return;
+            }
+            
+            // Try to resume audio context first (browser autoplay policy)
+            if (state.audioCtx.state === 'suspended') {
+                console.log('[Auto-start] Audio context is suspended, attempting to resume...');
+                try {
+                    // Use Promise.race with timeout to avoid hanging
+                    const resumePromise = state.audioCtx.resume();
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Resume timeout')), 1000)
+                    );
+                    
+                    await Promise.race([resumePromise, timeoutPromise]);
+                    console.log('[Auto-start] ✓ Audio context resumed successfully');
+                    console.log(`[Auto-start] Audio context state after resume: ${state.audioCtx.state}`);
+                } catch (err) {
+                    console.warn('[Auto-start] ✗ Failed to resume audio context:', err.message || err);
+                    console.warn('[Auto-start] Audio context will remain suspended until user interaction');
+                    // Continue anyway - startAudio() will try to resume again
+                }
+            }
+            
+            // Wait a bit more after resume
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            // Check audio context state again
+            console.log(`[Auto-start] Audio context state before start: ${state.audioCtx.state}`);
+            
+            // Try to start
+            console.log('[Auto-start] Attempting to start audio...');
+            console.log(`[Auto-start] Sources with audio: ${state.sources.filter(s => s.audioBuffer).length}`);
+            
+            try {
+                const success = await startAudio();
+                console.log(`[Auto-start] startAudio() returned: ${success}`);
+                if (success) {
+                    console.log('[Auto-start] ✓ Audio started successfully');
+                } else {
+                    console.warn('[Auto-start] ✗ Audio start returned false');
+                    // Check if audio context is still suspended
+                    if (state.audioCtx && state.audioCtx.state === 'suspended') {
+                        console.warn('[Auto-start] Audio context still suspended - will require user interaction');
+                        console.warn('[Auto-start] User can click on canvas to start audio');
+                    }
+                    state.autoStartAttempted = false; // Allow retry
+                }
+            } catch (err) {
+                console.error('[Auto-start] ✗ Failed to start audio:', err);
+                state.autoStartAttempted = false; // Allow retry on error
+            }
         }
         
         function stopAudio() {
@@ -1486,20 +1799,147 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             
             // Reset transform
             ctx.setTransform(1, 0, 0, 1, 0, 0);
+            
+            // Loading background GIF is handled via HTML img element overlay (for animation support)
+            
+            // Draw overlay if loading, showing listen button, or fading out (keeps dark background until fade completes)
+            let overlayOpacity = state.loadingProgress.overlayOpacity;
+            if (overlayOpacity === undefined) {
+                // Use default opacity if not set
+                overlayOpacity = (state.loadingProgress.isLoading || state.loadingProgress.showListenButton) ? 0.7 : 0;
+            }
+            if (overlayOpacity > 0) {
+                // Semi-transparent dark background (opacity fades out when listen button is clicked)
+                ctx.fillStyle = `rgba(0, 0, 0, ${overlayOpacity})`;
+                ctx.fillRect(0, 0, pixelSize, pixelSize);
+            }
+            
+            // Draw loading bar overlay if loading
+            if (state.loadingProgress.isLoading) {
+                const loading = state.loadingProgress;
+                const centerX = pixelSize / 2;
+                const centerY = pixelSize / 2;
+                
+                // Loading bar container
+                const barWidth = pixelSize * 0.6;
+                const barHeight = 8;
+                const barX = centerX - barWidth / 2;
+                const barY = centerY - barHeight / 2;
+                
+                // Background bar (dark)
+                ctx.fillStyle = 'rgba(40, 40, 40, 0.9)';
+                ctx.fillRect(barX, barY, barWidth, barHeight);
+                
+                // Progress bar (bright purple)
+                const progressWidth = barWidth * loading.progress;
+                if (progressWidth > 0) {
+                    // Bright purple gradient
+                    const gradient = ctx.createLinearGradient(barX, barY, barX + progressWidth, barY);
+                    gradient.addColorStop(0, '#9d4edd'); // Bright purple
+                    gradient.addColorStop(0.5, '#c77dff'); // Lighter purple
+                    gradient.addColorStop(1, '#e0aaff'); // Very light purple
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(barX, barY, progressWidth, barHeight);
+                    
+                    // Add subtle glow effect
+                    ctx.shadowColor = '#c77dff';
+                    ctx.shadowBlur = 10;
+                    ctx.fillRect(barX, barY, progressWidth, barHeight);
+                    ctx.shadowBlur = 0;
+                }
+                
+                // Border
+                ctx.strokeStyle = 'rgba(200, 150, 255, 0.5)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(barX, barY, barWidth, barHeight);
+            }
+            
+            // Draw "START THE EXPERIENCE" button if loading is complete
+            if (state.loadingProgress.showListenButton) {
+                const centerX = pixelSize / 2;
+                const centerY = pixelSize / 2;
+                const buttonOpacity = state.loadingProgress.buttonOpacity || 0;
+                
+                if (buttonOpacity > 0) {
+                    // Apply opacity for both stripe and button
+                    ctx.globalAlpha = buttonOpacity;
+                    
+                    // Button text (no background, just text with outline) - uppercase
+                    const buttonText = 'START THE EXPERIENCE';
+                    // Use Raleway font (thin, elegant) - always try Raleway first, fallback if not available
+                    ctx.font = '300 32px "Raleway", Raleway, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    
+                    // Measure text to determine stripe height
+                    const textMetrics = ctx.measureText(buttonText);
+                    const textHeight = 32; // Approximate text height
+                    const stripePadding = 12; // Padding above and below text
+                    const stripeHeight = textHeight + stripePadding * 2;
+                    
+                    // Draw horizontal stripe behind button (canvas width, centered on button)
+                    const stripeColor = '#1a0a1a'; // Dark purple, almost black
+                    ctx.fillStyle = stripeColor;
+                    ctx.fillRect(0, centerY - stripeHeight / 2, pixelSize, stripeHeight);
+                    
+                    // Enable high-quality text rendering (already set globally, but ensure it's active)
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    if (ctx.textRenderingOptimization) {
+                        ctx.textRenderingOptimization = 'optimizeQuality';
+                    }
+                    
+                    // Draw text outline (lighter color, thinner, no rounded joins)
+                    ctx.strokeStyle = '#e0aaff'; // Lighter purple outline
+                    ctx.lineWidth = 1.5; // Thinner stroke
+                    ctx.lineJoin = 'miter'; // Sharp corners, not rounded
+                    ctx.miterLimit = 2;
+                    ctx.strokeText(buttonText, centerX, centerY);
+                    
+                    // Draw text fill (dark color)
+                    ctx.fillStyle = '#1a1a1a'; // Dark color
+                    ctx.fillText(buttonText, centerX, centerY);
+                    
+                    // Reset global alpha
+                    ctx.globalAlpha = 1.0;
+                }
+            }
         }
         
         // Render loop (independent of audio, always runs)
-        // Update master volume meter
+        // Update master volume meter and gain reduction meter
         function updateMasterVolumeMeter() {
             if (!state.masterAnalyser || !state.isPlaying) {
                 const bar = document.getElementById('masterVolumeBar');
                 const value = document.getElementById('masterVolumeValue');
+                const grBar = document.getElementById('gainReductionBar');
+                const grValue = document.getElementById('gainReductionValue');
                 if (bar) {
                     bar.style.width = '0%';
                     bar.style.background = '#00cc33';
                 }
                 if (value) value.textContent = '-∞ dB';
+                if (grBar) {
+                    grBar.style.width = '0%';
+                }
+                if (grValue) grValue.textContent = '0.0 dB';
                 return;
+            }
+            
+            // Update gain reduction meter
+            if (state.masterCompressor) {
+                const gainReduction = state.masterCompressor.reduction;
+                const grBar = document.getElementById('gainReductionBar');
+                const grValue = document.getElementById('gainReductionValue');
+                
+                if (grBar && grValue) {
+                    // Gain reduction is negative (e.g., -3 dB means 3 dB reduction)
+                    const reductionAbs = Math.abs(gainReduction);
+                    // Scale to 0-100% (max 20 dB reduction shown)
+                    const reductionPercent = Math.min((reductionAbs / 20) * 100, 100);
+                    grBar.style.width = reductionPercent + '%';
+                    grValue.textContent = gainReduction.toFixed(1) + ' dB';
+                }
             }
             
             const dataArray = new Uint8Array(state.masterAnalyser.frequencyBinCount);
@@ -1809,6 +2249,112 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
         
         // Canvas interaction with proper coordinate transform
         canvas.addEventListener('mousedown', (e) => {
+            // Check if clicking "start the experience.." button
+            if (state.loadingProgress.showListenButton) {
+                const rect = canvas.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const clickY = e.clientY - rect.top;
+                const canvasWidth = canvas.width;
+                const canvasHeight = canvas.height;
+                const centerX = canvasWidth / 2;
+                const centerY = canvasHeight / 2;
+                
+                // Measure text to determine clickable area
+                const buttonText = 'START THE EXPERIENCE';
+                // Use Raleway font (thin, elegant)
+                ctx.font = '300 32px "Raleway", Raleway, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const textMetrics = ctx.measureText(buttonText);
+                const textWidth = textMetrics.width;
+                const textHeight = 32; // Approximate text height
+                const padding = 10; // Clickable padding around text
+                const buttonX = centerX - textWidth / 2 - padding;
+                const buttonY = centerY - textHeight / 2 - padding;
+                const buttonWidth = textWidth + padding * 2;
+                const buttonHeight = textHeight + padding * 2;
+                
+                // Check if click is within button bounds
+                if (clickX >= buttonX && clickX <= buttonX + buttonWidth &&
+                    clickY >= buttonY && clickY <= buttonY + buttonHeight) {
+                    // Start button fade out (3 seconds)
+                    const startButtonOpacity = state.loadingProgress.buttonOpacity || 1;
+                    const buttonStartTime = performance.now();
+                    const buttonFadeOutDuration = 3000; // 3 seconds
+                    
+                    const buttonFadeOut = (currentTime) => {
+                        const elapsed = currentTime - buttonStartTime;
+                        const progress = Math.min(elapsed / buttonFadeOutDuration, 1);
+                        state.loadingProgress.buttonOpacity = startButtonOpacity * (1 - progress);
+                        draw();
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(buttonFadeOut);
+                        } else {
+                            // Button fade complete, hide button
+                            state.loadingProgress.buttonOpacity = 0;
+                            state.loadingProgress.showListenButton = false;
+                            draw();
+                        }
+                    };
+                    
+                    requestAnimationFrame(buttonFadeOut);
+                    
+                    // Fade out overlay over 4 seconds
+                    const startOpacity = state.loadingProgress.overlayOpacity || 0.7;
+                    const startTime = performance.now();
+                    const duration = 4000; // 4 seconds
+                    
+                    const fadeOut = (currentTime) => {
+                        const elapsed = currentTime - startTime;
+                        const progress = Math.min(elapsed / duration, 1);
+                        state.loadingProgress.overlayOpacity = startOpacity * (1 - progress);
+                        draw();
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(fadeOut);
+                        } else {
+                            // Fade complete, hide overlay completely
+                            state.loadingProgress.overlayOpacity = 0;
+                            draw();
+                        }
+                    };
+                    
+                    requestAnimationFrame(fadeOut);
+                    
+                    // Resume audio context and start playback
+                    if (state.audioCtx && state.audioCtx.state === 'suspended') {
+                        state.audioCtx.resume().then(() => {
+                            console.log('[Listen Button] Audio context resumed');
+                            attemptAutoStart();
+                        }).catch(err => {
+                            console.warn('[Listen Button] Failed to resume:', err);
+                        });
+                    } else {
+                        attemptAutoStart();
+                    }
+                    return; // Don't process other click actions
+                }
+            }
+            
+            // Handle audio context resume on first user interaction (for autoplay policy)
+            if (state.audioCtx && state.audioCtx.state === 'suspended' && !state.isPlaying) {
+                const hasAudio = state.sources.some(s => s.audioBuffer);
+                if (hasAudio) {
+                    // User interaction detected - try to resume and start audio
+                    console.log('[User Interaction] Resuming audio context and starting audio...');
+                    state.audioCtx.resume().then(() => {
+                        console.log('[User Interaction] Audio context resumed');
+                        // Try to start audio after resume
+                        if (!state.isPlaying) {
+                            attemptAutoStart();
+                        }
+                    }).catch(err => {
+                        console.warn('[User Interaction] Failed to resume:', err);
+                    });
+                }
+            }
+            
             const world = screenToWorld(e.clientX, e.clientY);
             const { x, y } = world;
             
@@ -1855,6 +2401,36 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
         canvas.addEventListener('mousemove', (e) => {
             if (state.dragging === null || state.dragType === null) {
                 // Update cursor on hover
+                const rect = canvas.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const clickY = e.clientY - rect.top;
+                const canvasWidth = canvas.width;
+                const canvasHeight = canvas.height;
+                
+                // Check if hovering over button
+                if (state.loadingProgress.showListenButton) {
+                    const centerX = canvasWidth / 2;
+                    const centerY = canvasHeight / 2;
+                    const buttonText = 'START THE EXPERIENCE';
+                    ctx.font = '300 32px "Raleway", Raleway, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    const textMetrics = ctx.measureText(buttonText);
+                    const textWidth = textMetrics.width;
+                    const textHeight = 32;
+                    const padding = 10;
+                    const buttonX = centerX - textWidth / 2 - padding;
+                    const buttonY = centerY - textHeight / 2 - padding;
+                    const buttonWidth = textWidth + padding * 2;
+                    const buttonHeight = textHeight + padding * 2;
+                    
+                    if (clickX >= buttonX && clickX <= buttonX + buttonWidth &&
+                        clickY >= buttonY && clickY <= buttonY + buttonHeight) {
+                        canvas.style.cursor = 'pointer';
+                        return;
+                    }
+                }
+                
                 const world = screenToWorld(e.clientX, e.clientY);
                 const { x, y } = world;
                 
@@ -1867,7 +2443,12 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     for (const source of state.sources) {
                         const dist = distance(x, y, source.x, source.y);
                         if (dist < 10) {
-                            canvas.style.cursor = 'grab';
+                            // In listener mode (showSources false), show crosshair on sources
+                            if (!state.showSources) {
+                                canvas.style.cursor = 'crosshair';
+                            } else {
+                                canvas.style.cursor = 'grab';
+                            }
                             hovering = true;
                             break;
                         }
@@ -1974,6 +2555,82 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 if (valueDisplay) valueDisplay.textContent = value.toFixed(1);
                 if (state.masterGain) {
                     state.masterGain.gain.value = dbToLin(value);
+                }
+            });
+        }
+        
+        // Compressor controls
+        const compressorEnabledCheckbox = document.getElementById('compressorEnabled');
+        if (compressorEnabledCheckbox) {
+            compressorEnabledCheckbox.addEventListener('change', (e) => {
+                const enabled = e.target.checked;
+                state.compressorEnabled = enabled;
+                toggleCompressor(enabled);
+            });
+        }
+        
+        const compressorThreshold = document.getElementById('compressorThreshold');
+        if (compressorThreshold) {
+            compressorThreshold.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                const valueDisplay = document.getElementById('compressorThresholdValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+                if (state.masterCompressor) {
+                    // Store current makeup gain to prevent auto-adjustment
+                    const currentMakeupGain = state.masterMakeupGain ? state.masterMakeupGain.gain.value : dbToLin(4);
+                    state.masterCompressor.threshold.value = value;
+                    // Ensure makeup gain stays constant (no auto-adjustment)
+                    if (state.masterMakeupGain) {
+                        state.masterMakeupGain.gain.value = currentMakeupGain;
+                    }
+                }
+            });
+        }
+        
+        const compressorRatio = document.getElementById('compressorRatio');
+        if (compressorRatio) {
+            compressorRatio.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                const valueDisplay = document.getElementById('compressorRatioValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+                if (state.masterCompressor) {
+                    state.masterCompressor.ratio.value = value;
+                }
+            });
+        }
+        
+        const compressorAttack = document.getElementById('compressorAttack');
+        if (compressorAttack) {
+            compressorAttack.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                const valueDisplay = document.getElementById('compressorAttackValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+                if (state.masterCompressor) {
+                    state.masterCompressor.attack.value = value / 1000; // Convert ms to seconds
+                }
+            });
+        }
+        
+        const compressorRelease = document.getElementById('compressorRelease');
+        if (compressorRelease) {
+            compressorRelease.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                const valueDisplay = document.getElementById('compressorReleaseValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+                if (state.masterCompressor) {
+                    state.masterCompressor.release.value = value / 1000; // Convert ms to seconds
+                }
+            });
+        }
+        
+        const compressorMakeup = document.getElementById('compressorMakeup');
+        if (compressorMakeup) {
+            compressorMakeup.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                const valueDisplay = document.getElementById('compressorMakeupValue');
+                if (valueDisplay) valueDisplay.textContent = value;
+                if (state.masterMakeupGain) {
+                    state.masterMakeupGain.gain.value = dbToLin(value);
                 }
             });
         }
@@ -2542,8 +3199,48 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             if (loadedCount > 0) {
                 console.log(`[Auto-load] Loaded ${loadedCount} audio files from localStorage`);
                 updateSourcesList();
+                
+                // Show "Listen!" button after loading completes
+                // Set showListenButton first to ensure overlay stays visible, then hide loading bar
+                // Use requestAnimationFrame to ensure smooth transition without flash
+                requestAnimationFrame(() => {
+                    state.loadingProgress.showListenButton = true;
+                    // Ensure overlay opacity is set for fade out later
+                    if (state.loadingProgress.overlayOpacity === undefined) {
+                        state.loadingProgress.overlayOpacity = 0.7;
+                    }
+                    // Start button fade in (2 seconds)
+                    state.loadingProgress.buttonOpacity = 0;
+                    const startTime = performance.now();
+                    const fadeInDuration = 2000; // 2 seconds
+                    
+                    const fadeIn = (currentTime) => {
+                        const elapsed = currentTime - startTime;
+                        const progress = Math.min(elapsed / fadeInDuration, 1);
+                        state.loadingProgress.buttonOpacity = progress;
+                        draw();
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(fadeIn);
+                        } else {
+                            state.loadingProgress.buttonOpacity = 1;
+                            draw();
+                        }
+                    };
+                    
+                    requestAnimationFrame(fadeIn);
+                    
+                    // Loading background GIF is already visible from loading bar phase
+                    draw(); // Draw with button visible and loading bar still showing
+                    requestAnimationFrame(() => {
+                        state.loadingProgress.isLoading = false;
+                        draw(); // Now hide loading bar, overlay stays because showListenButton is true
+                    });
+                });
             } else {
                 console.log('[Auto-load] No saved audio files found in localStorage');
+                // Hide loading bar even if no files loaded
+                state.loadingProgress.isLoading = false;
             }
         }
         
@@ -2606,8 +3303,32 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             loadBgImage(DEFAULT_BG_SRC, false);
         }
         
-        // 6. Start render loop (independent of audio, always runs)
-        renderLoop();
+        // 5b. Loading background GIF is handled via HTML img element overlay (for animation support)
+        
+        // 6. Wait for Raleway font to load, then start render loop
+        const loadRalewayFont = async () => {
+            if (document.fonts && document.fonts.load) {
+                try {
+                    await document.fonts.load('300 32px Raleway');
+                    console.log('Raleway font loaded successfully');
+                } catch (err) {
+                    console.warn('Raleway font loading failed:', err);
+                }
+            }
+            
+            // Wait a bit more to ensure font is ready
+            if (document.fonts && document.fonts.ready) {
+                await document.fonts.ready;
+            }
+            
+            // Additional delay to ensure font is applied
+            setTimeout(() => {
+                console.log('Starting render loop');
+                renderLoop();
+            }, 100);
+        };
+        
+        loadRalewayFont();
         
         // 7. Update audio status
         updateAudioStatus();
