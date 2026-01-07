@@ -611,6 +611,28 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     <label>Live Readout</label>
                     <div id="readout" class="readout">Waiting for audio to start...</div>
                 </div>
+                <h3 style="margin-top: 15px; margin-bottom: 10px; font-size: 13px; color: #ccc;">Position Tracking</h3>
+                <div class="control-group">
+                    <label>Tracking Mode:</label>
+                    <select id="trackingMode" style="width: 100%; margin-top: 4px; padding: 4px;">
+                        <option value="manual">Manual (Drag)</option>
+                        <option value="devicemotion">Device Motion (Test)</option>
+                        <option value="arkit" disabled>ARKit (Native App Only)</option>
+                    </select>
+                    <div style="font-size: 10px; color: #888; margin-top: 4px;">
+                        Note: ARKit requires native iOS app. See ARKIT_INTEGRATION.md
+                    </div>
+                </div>
+                <div class="control-group toggle">
+                    <input type="checkbox" id="enableTracking">
+                    <label for="enableTracking">Enable Motion Tracking</label>
+                </div>
+                <div class="control-group">
+                    <label>Tracking Status:</label>
+                    <div id="trackingStatus" style="font-size: 11px; padding: 5px; background: #1a1a1a; border: 1px solid #444; border-radius: 3px; margin-top: 4px;">
+                        <span style="color: #888;">Status: </span><span id="trackingStatusText">Disabled</span>
+                    </div>
+                </div>
             </div>
         </div>
         </div>
@@ -730,6 +752,18 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 showListenButton: false, // Show "Listen!" button after loading completes
                 overlayOpacity: 0.7, // Overlay opacity (fades out when listen button is clicked)
                 buttonOpacity: 0 // Button opacity (fades in when shown, fades out when clicked)
+            },
+            // ARKit/DeviceMotion tracking state
+            tracking: {
+                enabled: false,
+                mode: 'manual', // 'manual', 'devicemotion', 'arkit' (arkit only in native app)
+                lastPosition: { x: 234.1, y: 234.8 },
+                velocity: { x: 0, y: 0 },
+                lastUpdateTime: null,
+                smoothingAlpha: 0.4, // Exponential smoothing factor (0-1, lower = smoother)
+                maxSpeed: 2.0, // Maximum speed in canvas units per second (for outlier detection)
+                qrAnchorScanned: false,
+                qrAnchorPosition: null, // QR anchor position in world coordinates
             },
         };
         
@@ -2822,9 +2856,156 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             }
         }
         
+        // Update listener position from tracking
+        function updateTrackingPosition() {
+            if (!state.tracking.enabled) return;
+            
+            if (state.tracking.mode === 'devicemotion') {
+                // DeviceMotion tracking (basic dead reckoning - test only)
+                // This is NOT ARKit - just basic motion tracking for testing
+                // Real ARKit requires native iOS app (see ARKIT_INTEGRATION.md)
+                updateDeviceMotionTracking();
+            } else if (state.tracking.mode === 'arkit') {
+                // ARKit tracking (native app only)
+                // Position updates come from native app via window.updateListenerPosition()
+                // This is just a placeholder in web version
+            }
+        }
+        
+        // DeviceMotion tracking (test only - not ARKit quality)
+        function updateDeviceMotionTracking() {
+            // This is basic dead reckoning - drift will occur
+            // Real ARKit requires native iOS app
+            if (!window.DeviceMotionEvent) {
+                updateTrackingStatus('DeviceMotion not supported', false);
+                return;
+            }
+        }
+        
+        // Update tracking status UI
+        function updateTrackingStatus(message, isActive) {
+            const statusText = document.getElementById('trackingStatusText');
+            if (statusText) {
+                statusText.textContent = message;
+                statusText.style.color = isActive ? '#4a9' : '#888';
+            }
+        }
+        
+        // Enable/disable DeviceMotion tracking
+        function enableDeviceMotionTracking() {
+            if (!window.DeviceMotionEvent) {
+                alert('DeviceMotion API is not supported on this device.');
+                state.tracking.enabled = false;
+                updateTrackingStatus('Not supported', false);
+                return;
+            }
+            
+            // Request permission (iOS 13+ requires user gesture)
+            if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                DeviceMotionEvent.requestPermission().then(response => {
+                    if (response === 'granted') {
+                        startDeviceMotionTracking();
+                    } else {
+                        // Permission denied - show helpful message
+                        const message = 'Motion tracking izni reddedildi.\n\n' +
+                            'iOS\'ta izin vermek için:\n' +
+                            '1. Ayarlar > Safari > Motion & Orientation Access\'i açın\n' +
+                            '2. Sayfayı yenileyin ve tekrar deneyin\n\n' +
+                            'Alternatif: Manual (Drag) modunu kullanabilirsiniz.';
+                        alert(message);
+                        state.tracking.enabled = false;
+                        const enableCheckbox = document.getElementById('enableTracking');
+                        if (enableCheckbox) {
+                            enableCheckbox.checked = false;
+                        }
+                        updateTrackingStatus('Permission denied - Safari ayarlarından izin verin', false);
+                    }
+                }).catch(err => {
+                    console.error('DeviceMotion permission error:', err);
+                    state.tracking.enabled = false;
+                    const enableCheckbox = document.getElementById('enableTracking');
+                    if (enableCheckbox) {
+                        enableCheckbox.checked = false;
+                    }
+                    updateTrackingStatus('Permission error', false);
+                });
+            } else {
+                // Older browsers - permission not required
+                startDeviceMotionTracking();
+            }
+        }
+        
+        function startDeviceMotionTracking() {
+            state.tracking.enabled = true;
+            state.tracking.lastPosition = { x: state.listener.x, y: state.listener.y };
+            state.tracking.lastUpdateTime = performance.now() / 1000;
+            updateTrackingStatus('Tracking... (Test mode - drift will occur)', true);
+            
+            window.addEventListener('devicemotion', handleDeviceMotion);
+        }
+        
+        function handleDeviceMotion(event) {
+            if (!state.tracking.enabled || state.tracking.mode !== 'devicemotion') return;
+            
+            const now = performance.now() / 1000;
+            const dt = now - (state.tracking.lastUpdateTime || now);
+            state.tracking.lastUpdateTime = now;
+            
+            if (dt <= 0 || dt > 0.1) return; // Skip invalid/infrequent updates
+            
+            // Basic dead reckoning (NOT accurate - test only)
+            // Real ARKit requires native iOS app
+            const accel = event.accelerationIncludingGravity;
+            if (!accel) return;
+            
+            // Very basic integration (will drift significantly)
+            // This is just for testing - real ARKit is much better
+            const scale = 0.1; // Rough scaling factor (test only)
+            const dx = accel.x * scale * dt * dt;
+            const dy = -accel.y * scale * dt * dt; // Invert Y
+            
+            // Smooth and update
+            const alpha = state.tracking.smoothingAlpha;
+            let newX = state.tracking.lastPosition.x + dx;
+            let newY = state.tracking.lastPosition.y + dy;
+            
+            // Clamp to world bounds
+            newX = clamp(newX, 0, state.worldSize);
+            newY = clamp(newY, 0, state.worldSize);
+            
+            // Smooth with exponential filter
+            state.listener.x = alpha * newX + (1 - alpha) * state.listener.x;
+            state.listener.y = alpha * newY + (1 - alpha) * state.listener.y;
+            
+            state.tracking.lastPosition = { x: state.listener.x, y: state.listener.y };
+        }
+        
+        function disableDeviceMotionTracking() {
+            state.tracking.enabled = false;
+            window.removeEventListener('devicemotion', handleDeviceMotion);
+            updateTrackingStatus('Disabled', false);
+        }
+        
+        // ARKit position update (called from native app via JavaScript bridge)
+        window.updateListenerPosition = function(x, y) {
+            if (state.tracking.enabled && state.tracking.mode === 'arkit') {
+                // Smooth update
+                const alpha = state.tracking.smoothingAlpha;
+                state.listener.x = alpha * x + (1 - alpha) * state.listener.x;
+                state.listener.y = alpha * y + (1 - alpha) * state.listener.y;
+                
+                // Clamp to bounds
+                state.listener.x = clamp(state.listener.x, 0, state.worldSize);
+                state.listener.y = clamp(state.listener.y, 0, state.worldSize);
+            }
+        };
+        
         function renderLoop() {
             // Update visual alpha (always, for smooth fading)
             updateVisualAlpha();
+            
+            // Update tracking position
+            updateTrackingPosition();
             
             // Update T1 movement
             const t1Source = state.sources.find(s => s.id === 'T1');
@@ -3100,6 +3281,11 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
         
         // Canvas interaction with proper coordinate transform
         canvas.addEventListener('mousedown', (e) => {
+            // Don't allow drag if tracking is enabled (unless manual mode)
+            if (state.tracking.enabled && state.tracking.mode !== 'manual') {
+                return;
+            }
+            
             // Check if clicking "start the experience.." button
             if (state.loadingProgress.showListenButton) {
                 const rect = canvas.getBoundingClientRect();
@@ -3202,9 +3388,10 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             const world = screenToWorld(e.clientX, e.clientY);
             const { x, y } = world;
             
-            // Check if clicking listener
+            // Check if clicking listener (increase touch area for easier tapping)
             const listenerDist = distance(x, y, state.listener.x, state.listener.y);
-            if (listenerDist < 10) {
+            const touchRadius = 20; // Increased from 10 to 20 for easier touch on mobile
+            if (listenerDist < touchRadius) {
                 state.dragging = { x, y };
                 state.dragType = 'listener';
                 // Calculate and store radius from ring center if snap to rings is enabled
@@ -3216,6 +3403,7 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                     state.dragStartRadius = null;
                 }
                 canvas.style.cursor = 'grabbing';
+                console.log('[Mouse] Started dragging listener at', x, y);
                 return;
             }
             
@@ -3306,7 +3494,8 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                 return;
             }
             
-            const world = screenToWorld(e.clientX, e.clientY);
+            const rect = canvas.getBoundingClientRect();
+            const world = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
             let { x, y } = world;
             
             x = clamp(x, 0, state.worldSize);
@@ -3342,6 +3531,155 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
             state.dragType = null;
             state.dragStartRadius = null;
             canvas.style.cursor = 'crosshair';
+        });
+        
+        
+        // Touch events for mobile devices
+        function getTouchCoordinates(e) {
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0] || e.changedTouches[0];
+            return {
+                x: touch.clientX - rect.left,
+                y: touch.clientY - rect.top
+            };
+        }
+        
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent scrolling
+            const coords = getTouchCoordinates(e);
+            
+            // Check if clicking the start button first
+            if (state.loadingProgress.showListenButton) {
+                const canvasWidth = canvas.width;
+                const canvasHeight = canvas.height;
+                const centerX = canvasWidth / 2;
+                const centerY = canvasHeight / 2;
+                const buttonText = 'START THE EXPERIENCE';
+                ctx.font = '300 32px "Raleway", Raleway, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const textMetrics = ctx.measureText(buttonText);
+                const textWidth = textMetrics.width;
+                const textHeight = 32;
+                const padding = 10;
+                const buttonX = centerX - textWidth / 2 - padding;
+                const buttonY = centerY - textHeight / 2 - padding;
+                const buttonWidth = textWidth + padding * 2;
+                const buttonHeight = textHeight + padding * 2;
+                
+                if (coords.x >= buttonX && coords.x <= buttonX + buttonWidth &&
+                    coords.y >= buttonY && coords.y <= buttonY + buttonHeight) {
+                    // Start button clicked - same logic as mouse click
+                    const startButtonOpacity = state.loadingProgress.buttonOpacity || 1;
+                    const buttonStartTime = performance.now();
+                    const buttonFadeOutDuration = 3000;
+                    
+                    const buttonFadeOut = (currentTime) => {
+                        const elapsed = currentTime - buttonStartTime;
+                        const progress = Math.min(elapsed / buttonFadeOutDuration, 1);
+                        state.loadingProgress.buttonOpacity = startButtonOpacity * (1 - progress);
+                        draw();
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(buttonFadeOut);
+                        } else {
+                            state.loadingProgress.buttonOpacity = 0;
+                            state.loadingProgress.showListenButton = false;
+                            draw();
+                        }
+                    };
+                    
+                    requestAnimationFrame(buttonFadeOut);
+                    
+                    const startOpacity = state.loadingProgress.overlayOpacity || 0.7;
+                    const startTime = performance.now();
+                    const duration = 4000;
+                    
+                    const fadeOut = (currentTime) => {
+                        const elapsed = currentTime - startTime;
+                        const progress = Math.min(elapsed / duration, 1);
+                        state.loadingProgress.overlayOpacity = startOpacity * (1 - progress);
+                        draw();
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(fadeOut);
+                        } else {
+                            state.loadingProgress.overlayOpacity = 0;
+                            draw();
+                        }
+                    };
+                    
+                    requestAnimationFrame(fadeOut);
+                    
+                    if (state.audioCtx && state.audioCtx.state === 'suspended') {
+                        state.audioCtx.resume().then(() => {
+                            console.log('[Start Button] Audio context resumed');
+                            startAudio();
+                        }).catch(err => {
+                            console.warn('[Start Button] Failed to resume:', err);
+                        });
+                    } else {
+                        startAudio();
+                    }
+                    return; // Don't process drag
+                }
+            }
+            
+            // Don't allow drag if tracking is enabled (unless manual mode)
+            if (state.tracking.enabled && state.tracking.mode !== 'manual') {
+                return;
+            }
+            
+            const world = screenToWorld(coords.x, coords.y);
+            const { x, y } = world;
+            
+            // Check if touching listener (increase touch area for easier tapping on mobile)
+            const listenerDist = distance(x, y, state.listener.x, state.listener.y);
+            const touchRadius = 20; // Increased from 10 to 20 for easier touch on mobile
+            if (listenerDist < touchRadius) {
+                state.dragging = { x: coords.x, y: coords.y };
+                state.dragType = 'listener';
+                const dx = state.listener.x - state.ringCenter.x;
+                const dy = state.listener.y - state.ringCenter.y;
+                state.dragStartRadius = Math.sqrt(dx * dx + dy * dy);
+                console.log('[Touch] Started dragging listener at', x, y);
+            } else {
+                console.log('[Touch] Touch too far from listener. Distance:', listenerDist, 'Touch at:', x, y, 'Listener at:', state.listener.x, state.listener.y);
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            if (state.dragging === null || state.dragType === null) return;
+            
+            e.preventDefault(); // Prevent scrolling
+            const coords = getTouchCoordinates(e);
+            const world = screenToWorld(coords.x, coords.y);
+            let { x, y } = world;
+            
+            x = clamp(x, 0, state.worldSize);
+            y = clamp(y, 0, state.worldSize);
+            
+            if (state.dragType === 'listener') {
+                state.listener.x = x;
+                state.listener.y = y;
+                console.log('[Touch] Moving listener to', x, y);
+            }
+            
+            draw();
+        }, { passive: false });
+        
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            state.dragging = null;
+            state.dragType = null;
+            state.dragStartRadius = null;
+        });
+        
+        canvas.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            state.dragging = null;
+            state.dragType = null;
+            state.dragStartRadius = null;
         });
         
         // Tab switching
@@ -3855,6 +4193,56 @@ NOTE: Audio files must be served from a local server due to CORS restrictions.
                         overlay.classList.add('visible');
                     } else {
                         overlay.classList.remove('visible');
+                    }
+                }
+            });
+        }
+        
+        // Tracking mode selector
+        const trackingMode = document.getElementById('trackingMode');
+        if (trackingMode) {
+            trackingMode.addEventListener('change', (e) => {
+                const mode = e.target.value;
+                state.tracking.mode = mode;
+                
+                // Disable tracking if switching modes
+                if (state.tracking.enabled) {
+                    disableDeviceMotionTracking();
+                }
+                
+                // Enable tracking checkbox based on mode
+                const enableCheckbox = document.getElementById('enableTracking');
+                if (enableCheckbox) {
+                    enableCheckbox.disabled = (mode === 'arkit');
+                    if (mode === 'arkit') {
+                        enableCheckbox.checked = false;
+                        state.tracking.enabled = false;
+                        updateTrackingStatus('ARKit requires native iOS app', false);
+                    }
+                }
+            });
+        }
+        
+        // Enable/disable tracking checkbox
+        const enableTracking = document.getElementById('enableTracking');
+        if (enableTracking) {
+            enableTracking.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    if (state.tracking.mode === 'devicemotion') {
+                        enableDeviceMotionTracking();
+                    } else if (state.tracking.mode === 'manual') {
+                        state.tracking.enabled = false;
+                        updateTrackingStatus('Manual mode - drag to move', false);
+                    } else if (state.tracking.mode === 'arkit') {
+                        updateTrackingStatus('ARKit requires native iOS app', false);
+                        e.target.checked = false;
+                    }
+                } else {
+                    if (state.tracking.mode === 'devicemotion') {
+                        disableDeviceMotionTracking();
+                    } else {
+                        state.tracking.enabled = false;
+                        updateTrackingStatus('Disabled', false);
                     }
                 }
             });
